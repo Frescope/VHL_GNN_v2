@@ -21,7 +21,7 @@ class Path:
     parser.add_argument('--num_blocks',default=4,type=int)
     parser.add_argument('--seq_len',default=20,type=int)
     parser.add_argument('--bc',default=8,type=int)
-    parser.add_argument('--dropout',default='0.1',type=float)
+    parser.add_argument('--dropout',default='0.4',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='tvsum_SA', type=str)
     parser.add_argument('--server', default=1, type=bool)
@@ -69,14 +69,13 @@ load_ckpt_model = False
 
 if hp.server == 0:
     # path for USTC server
-    SCORE_PATH = r'/data/linkang/VHL_GNN/tvsum_score_record.json'
-    VCAT_PATH = r'/data/linkang/VHL_GNN/tvsum_video_category.json'
-    SEGINFO_PATH = r'/data/linkang/VHL_GNN/tvsum_segment_info.json'
-    FEATURE_DIR = r'/data//linkang/VHL_GNN/tvsum_feature_googlenet_2fps/'
-    model_save_dir = r'/data/linkang/model_HL_v4/'+hp.msd+'/'
+    SCORE_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_score_record.json'
+    VCAT_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_video_category.json'
+    SEGINFO_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_segment_info.json'
+    FEATURE_DIR = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_feature_googlenet_2fps/'
+    model_save_dir = r'/public/data0/users/hulinkang/model_HL_v2/'+hp.msd+'/'
     # ckpt_model_path = '../../model_HL_v4/tvsum_SA/STEP_5000'
     ckpt_model_path = '../../model_HL_v4/tvsum_SA/S20376-E24-L0.010669-F0.512'
-
 else:
     # path for USTC servers
     SCORE_PATH = r'/data/linkang/VHL_GNN/tvsum_score_record.json'
@@ -84,8 +83,8 @@ else:
     SEGINFO_PATH = r'/data/linkang/VHL_GNN/tvsum_segment_info.json'
     FEATURE_DIR = r'/data//linkang/VHL_GNN/tvsum_feature_googlenet_2fps/'
     model_save_dir = r'/data/linkang/model_HL_v4/'+hp.msd+'/'
-    # ckpt_model_path = '../../model_HL_v4/tvsum_SA/STEP_5000'
-    ckpt_model_path = '../../model_HL_v4/tvsum_SA/S20376-E24-L0.010669-F0.512'
+    # ckpt_model_path = '../model_HL_v2/tvsum_SA/STEP_5000'
+    ckpt_model_path = '../model_HL_v2/tvsum_SA/S20376-E24-L0.010669-F0.512'
 
 logging.basicConfig(level=logging.INFO)
 

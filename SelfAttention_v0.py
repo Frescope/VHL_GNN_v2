@@ -87,7 +87,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
         attention = outputs
 
         # dropout
-        outputs = tf.layers.dropout(outputs, rate=0.1, training=training)
+        outputs = tf.layers.dropout(outputs, rate=0.4, training=training)
 
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
