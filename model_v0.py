@@ -24,7 +24,7 @@ class Path:
     parser.add_argument('--dropout',default='0.4',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='tvsum_SA', type=str)
-    parser.add_argument('--server', default=1, type=bool)
+    parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--lr_noam', default=2e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=60000, type=int)
@@ -378,6 +378,7 @@ def frame2shot(vid,segment_info,scores):
     keyshot_labels = []
     for i in range(len(scores)):
         y = scores[i]
+        y = (y - np.min(y)) / (np.max(y) - np.min(y))
         lists = [(y[cps[idx]:cps[idx + 1]], cps[idx]) for idx in range(len(cps) - 1)]
         segments = [tuple([np.average(i[0]), len(i[0]), i[1]]) for i in lists]
         value, weight, start = zip(*segments)
