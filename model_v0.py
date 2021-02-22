@@ -28,6 +28,7 @@ class Path:
     parser.add_argument('--lr_noam', default=2e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=60000, type=int)
+    parser.add_argument('--pos_ratio',default=0.5, type=float)
 
 hparams = Path()
 parser = hparams.parser
@@ -64,7 +65,7 @@ NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 
 D_INPUT = 1024
-POS_RATIO = 0.75  # batch中正样本比例上限
+POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
 load_ckpt_model = False
 
