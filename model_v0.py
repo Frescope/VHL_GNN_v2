@@ -20,7 +20,7 @@ class Path:
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=4,type=int)
     parser.add_argument('--seq_len',default=10,type=int)
-    parser.add_argument('--bc',default=8,type=int)
+    parser.add_argument('--bc',default=10,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='tvsum_SA', type=str)
@@ -64,6 +64,7 @@ NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 
 D_INPUT = 1024
+POS_RATIO = 0.75  # batch中正样本比例上限
 
 load_ckpt_model = False
 
@@ -220,6 +221,61 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
         logging.info('Label Mismatch: %d' % step)
     return features, scores_avgs, labels, sample_poses
 
+def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
+    # 可以调整正负样本比例的版本，不能使用pairwise loss
+    pos_list,neg_list = train_scheme
+    pos_num = len(pos_list)
+    neg_num = len(neg_list)
+
+    # 先生成batch_index并随机排列，然后按打乱后的顺序抽取sample_poses
+    batch_index_raw = []
+    pos_num_batch = math.ceil(gpu_num * bc * POS_RATIO)  # batch中正样本的数量
+    neg_num_batch = gpu_num * bc - pos_num_batch
+    for i in range(pos_num_batch):
+        pos_position = (step * pos_num_batch + i) % pos_num
+        batch_index_raw.append(pos_list[pos_position])
+    for i in range(neg_num_batch):
+        neg_position = (step * neg_num_batch + i) % neg_num
+        batch_index_raw.append(neg_list[neg_position])
+    random.shuffle(batch_index_raw)
+    batch_index = []
+    sample_poses = []
+    batch_labels = []  # only for check
+    for i in range(len(batch_index_raw)):
+        vid, seq_start, seq_end, sample_pos, sample_label = batch_index_raw[i]
+        batch_index.append((vid, seq_start, seq_end, sample_pos))
+        sample_poses.append(sample_pos - seq_start)
+        batch_labels.append(sample_label)
+
+    # 根据索引读取数据，并做padding
+    features = []
+    scores_avgs = []
+    labels = []
+    for i in range(len(batch_index)):
+        vid,seq_start,seq_end,sample_pos = batch_index[i]
+        vlength = len(data[vid]['labels'])
+        seq_end = min(vlength,seq_end)  # 截断
+        padding_len = seq_len - (seq_end - seq_start)
+        feature = data[vid]['feature'][seq_start:seq_end]
+        scores_avg = data[vid]['scores_avg'][seq_start:seq_end]
+        if padding_len > 0:
+            feature_pad = np.zeros((padding_len, D_INPUT))
+            scores_avg_pad = np.zeros((padding_len,))
+            feature = np.vstack((feature,feature_pad))  # 统一在后侧padding
+            scores_avg = np.hstack((scores_avg, scores_avg_pad))
+        features.append(feature)
+        scores_avgs.append(scores_avg)
+        labels.append(data[vid]['labels'][sample_pos])
+    features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
+    scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
+    labels = np.array(labels).reshape((gpu_num * bc,))
+    sample_poses = np.array(sample_poses).reshape((gpu_num * bc,))
+
+    # check
+    if np.sum(labels - np.array(batch_labels)) != 0:
+        logging.info('Label Mismatch: %d' % step)
+    return features, scores_avgs, labels, sample_poses
+
 def test_scheme_build(data_test,seq_len):
     # 与train_schem_build一致，但是不区分正负样本，也不做随机化
     seq_list = []
@@ -308,12 +364,13 @@ def score_pred(features,scores_avg,sample_poses,drop_out,training):
     seq_input = tf.reshape(features, shape=(BATCH_SIZE, SEQ_LEN, -1))  # bc*seq_len*1024
     logits, attention_list = self_attention(seq_input, scores_avg, SEQ_LEN, NUM_BLOCKS,
                                             NUM_HEADS, drop_out, training)  # bc*seq_len
-    # logits = tf.clip_by_value(tf.reshape(tf.sigmoid(logits), [-1, 1]), 1e-6, 0.999999)  # (bc*seq_len,1)
 
     target = tf.one_hot(indices=sample_poses, depth=logits.get_shape().as_list()[-1], on_value=1, off_value=0)
     target = tf.cast(target, dtype=tf.float32)
     logits = tf.reduce_sum(logits * target, axis=1)  # 只保留取样位置的值
     logits = tf.reshape(logits, [-1, 1])
+
+    logits = tf.clip_by_value(tf.reshape(tf.sigmoid(logits), [-1, 1]), 1e-6, 0.999999)  # (bc*seq_len,1)
 
     return logits, attention_list
 
@@ -346,6 +403,12 @@ def tower_loss_huber(name_scope,preds,labels):
     total_loss = cost
 
     return tf.reduce_mean(total_loss)
+
+def tower_loss(name_scope,logits,labels):
+    y = tf.reshape(labels,[-1,1])
+    ce = -y * (tf.log(logits)) - (1 - y) * tf.log(1 - logits)
+    loss = tf.reduce_mean(ce)
+    return loss
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -466,8 +529,8 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode):
                 attention_list += atlist_one  # 逐个拼接各个卡上的attention_list
                 # calculate loss & gradients
                 loss_name_scope = ('gpud_%d_loss' % gpu_index)
-                loss = tower_loss_huber(loss_name_scope, logits, labels)
-                # loss = tower_loss(loss_name_scope,logits,labels)
+                # loss = tower_loss_huber(loss_name_scope, logits, labels)
+                loss = tower_loss(loss_name_scope,logits,labels)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -495,7 +558,10 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode):
 
         # train & test preparation
         train_scheme = train_scheme_build_v3(data_train, SEQ_LEN)
-        epoch_step = math.ceil(len(train_scheme[0]) / (BATCH_SIZE * GPU_NUM))  # 所有正样本都计算过一次作为一个epoch
+        # epoch_step = math.ceil(len(train_scheme[0]) / (BATCH_SIZE * GPU_NUM / 2))  # 所有正样本都计算过一次作为一个epoch
+        # 正负样本比例可变的版本
+        epoch_step = math.ceil(len(train_scheme[0]) / (BATCH_SIZE * GPU_NUM * POS_RATIO)) # 所有正样本都计算过一次作为一个epoch
+
         test_scheme, test_vids = test_scheme_build(data_test,SEQ_LEN)
         max_test_step = math.ceil(len(test_scheme) / BATCH_SIZE / GPU_NUM)
 
@@ -503,7 +569,7 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode):
         ob_loss = []
         timepoint = time.time()
         for step in range(MAXSTEPS):
-            features_b, scores_avg_b, labels_b, sample_poses_b = get_batch_train(data_train, train_scheme,
+            features_b, scores_avg_b, labels_b, sample_poses_b = get_batch_train_v2(data_train, train_scheme,
                                                                                  step,GPU_NUM,BATCH_SIZE,SEQ_LEN)
             observe = sess.run([train_op] + loss_list + logits_list + attention_list + [global_step, lr],
                                feed_dict={features_holder: features_b,
