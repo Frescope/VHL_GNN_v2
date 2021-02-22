@@ -19,9 +19,9 @@ class Path:
     parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=4,type=int)
-    parser.add_argument('--seq_len',default=20,type=int)
+    parser.add_argument('--seq_len',default=10,type=int)
     parser.add_argument('--bc',default=8,type=int)
-    parser.add_argument('--dropout',default='0.4',type=float)
+    parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='tvsum_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
@@ -444,8 +444,8 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode):
         training_holder = tf.placeholder(tf.bool,shape=())
 
         # training operations
-        # lr = noam_scheme(LR_NOAM,global_step,WARMUP_STEP)
-        lr = tf.train.piecewise_constant(global_step,PHASES_STEPS,PHASES_LR)
+        lr = noam_scheme(LR_NOAM,global_step,WARMUP_STEP)
+        # lr = tf.train.piecewise_constant(global_step,PHASES_STEPS,PHASES_LR)
         opt_train = tf.train.AdamOptimizer(lr)
 
         # graph building
