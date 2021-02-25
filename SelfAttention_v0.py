@@ -50,7 +50,7 @@ def ln(inputs, epsilon=1e-8, scope="ln"):
 
     return outputs
 
-def scaled_dot_product_attention(Q, K, V, key_masks,
+def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
                                  causality=False, dropout_rate=0.,
                                  training=True,
                                  scope="scaled_dot_product_attention"):
@@ -74,7 +74,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
         outputs /= d_k ** 0.5
 
         # key masking
-        outputs = mask(outputs, key_masks=key_masks, type="key")
+        outputs, km = mask(outputs, key_masks=key_masks, multihead_mask=multihead_mask, type="key")
 
         # causality or future blinding masking
         if causality:
@@ -92,18 +92,20 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
 
-    return outputs, attention
+    return outputs, km
 
-def mask(inputs, key_masks=None, type=None):
+def mask(inputs, key_masks=None, multihead_mask=None, type=None):
     """Masks paddings on keys or queries to inputs
     inputs: 3d tensor. (h*N, T_q, T_k)
     key_masks: 3d tensor. (N, 1, T_k)
     type: string. "key" | "future"
     """
     padding_num = -2 ** 32 + 1
+
     if type in ("k", "key", "keys"):
         key_masks = tf.to_float(key_masks)
         key_masks = tf.tile(key_masks, [tf.shape(inputs)[0] // tf.shape(key_masks)[0], 1])  # (h*N, seqlen)
+        key_masks = key_masks + multihead_mask
         key_masks = tf.expand_dims(key_masks, 1)  # (h*N, 1, seqlen)
         outputs = inputs + key_masks * padding_num
     elif type in ("f", "future", "right"):
@@ -116,9 +118,9 @@ def mask(inputs, key_masks=None, type=None):
     else:
         print("Check if you entered type correctly!")
 
-    return outputs
+    return outputs, key_masks * padding_num
 
-def multihead_attention(queries, keys, values, key_masks,
+def multihead_attention(queries, keys, values, key_masks, multihead_mask,
                         num_heads=8,
                         dropout_rate=0,
                         training=True,
@@ -151,7 +153,7 @@ def multihead_attention(queries, keys, values, key_masks,
         V_ = tf.concat(tf.split(V, num_heads, axis=2), axis=0)  # (h*N, T_k, d_model/h)
 
         # Attention
-        outputs, attention = scaled_dot_product_attention(Q_, K_, V_, key_masks, causality, dropout_rate, training)
+        outputs, attention = scaled_dot_product_attention(Q_, K_, V_, key_masks, multihead_mask, causality, dropout_rate, training)
 
         # Restore shape
         # outputs = tf.layers.dropout(
@@ -191,7 +193,7 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
         outputs += inputs
     return outputs
 
-def self_attention(seq_input, score, seq_len, num_blocks, num_heads, drop_out, training=True):
+def self_attention(seq_input, score, multihead_mask, seq_len, num_blocks, num_heads, drop_out, training=True):
     # input: seq_input(bc*seq_len*d) score(bc*seq_len)
     # return: logits(bc,seq_len)
     with tf.variable_scope('self-attetion', reuse=tf.AUTO_REUSE):
@@ -211,6 +213,7 @@ def self_attention(seq_input, score, seq_len, num_blocks, num_heads, drop_out, t
                                           keys=enc,
                                           values=enc,
                                           key_masks=src_masks,
+                                          multihead_mask=multihead_mask,
                                           num_heads=num_heads,
                                           dropout_rate=drop_out,
                                           training=training,
