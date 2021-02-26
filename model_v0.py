@@ -17,9 +17,9 @@ from tools.knapsack_iter import knapSack
 class Path:
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default='3',type=str)
-    parser.add_argument('--num_heads',default=8,type=int)
+    parser.add_argument('--num_heads',default=16,type=int)
     parser.add_argument('--num_blocks',default=4,type=int)
-    parser.add_argument('--seq_len',default=10,type=int)
+    parser.add_argument('--seq_len',default=15,type=int)
     parser.add_argument('--bc',default=10,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
@@ -29,7 +29,7 @@ class Path:
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=90000, type=int)
     parser.add_argument('--pos_ratio',default=0.8, type=float)
-    parser.add_argument('--multimask',default=0, type=int)
+    parser.add_argument('--multimask',default=1, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -57,7 +57,7 @@ DROP_OUT = hp.dropout
 EVL_EPOCHS = 1  # epochs for evaluation
 L2_LAMBDA = 0.005  # weightdecay loss
 GRAD_THRESHOLD = 10.0  # gradient threshold
-MAX_F1 = 0.4
+MAX_F1 = 0.6
 
 GPU_NUM = hp.gpu_num
 BATCH_SIZE = hp.bc
@@ -65,7 +65,7 @@ SEQ_LEN = hp.seq_len
 NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 MUlTIHEAD_ATTEN = hp.multimask
-RECEP_SCOPES = [0,1,2,3,4,5,6,7,8,9,10]  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
+RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 1024
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
