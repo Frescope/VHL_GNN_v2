@@ -17,17 +17,17 @@ from tools.knapsack_iter import knapSack
 class Path:
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default='3',type=str)
-    parser.add_argument('--num_heads',default=16,type=int)
+    parser.add_argument('--num_heads',default=64,type=int)
     parser.add_argument('--num_blocks',default=4,type=int)
-    parser.add_argument('--seq_len',default=15,type=int)
+    parser.add_argument('--seq_len',default=70,type=int)
     parser.add_argument('--bc',default=10,type=int)
-    parser.add_argument('--dropout',default='0.1',type=float)
+    parser.add_argument('--dropout',default='0.15',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='tvsum_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=3e-6, type=float)
+    parser.add_argument('--lr_noam', default=1e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
-    parser.add_argument('--maxstep', default=90000, type=int)
+    parser.add_argument('--maxstep', default=45000, type=int)
     parser.add_argument('--pos_ratio',default=0.8, type=float)
     parser.add_argument('--multimask',default=1, type=int)
 
@@ -47,7 +47,7 @@ else:
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
 LR_NOAM = hp.lr_noam
-MIN_TRAIN_STEPS = 0
+MIN_TRAIN_STEPS = 2000
 MAXSTEPS = hp.maxstep
 PHASES_STEPS = [3000]
 PHASES_LR = [4e-6, 1e-6]
@@ -672,17 +672,17 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode):
                     if f > max_f1:
                         max_f1 = f
                     model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step,epoch,np.mean(loss_array),f)
-                    # saver_overall.save(sess, model_path)
+                    saver_overall.save(sess, model_path)
                     logging.info('Model Saved: '+model_path+'\n')
 
             if step % 5000 == 0 and step > 0:
                 model_path = model_save_dir + 'S%d-E%d' % (step+PRESTEPS, epoch)
-                # saver_overall.save(sess, model_path)
+                saver_overall.save(sess, model_path)
                 logging.info('Model Saved: '+str(step + PRESTEPS))
 
             # saving final model
         model_path = model_save_dir + 'S%d' % (MAXSTEPS + PRESTEPS)
-        # saver_overall.save(sess, model_path)
+        saver_overall.save(sess, model_path)
         logging.info('Model Saved: '+str(MAXSTEPS + PRESTEPS))
 
     return
@@ -706,7 +706,7 @@ def main(self):
     logging.info('Sequence Length: '+str(SEQ_LEN))
     logging.info('*' * 50+'\n')
 
-    run_training(data_train, data_test, segment_info, score_record, 0)  # for training
+    run_training(data_train, data_valid, segment_info, score_record, 0)  # for training
     # run_training(data_train, data_train, segment_info, score_record, 1)  # for testing
 
     # train_scheme = train_scheme_build_v3(data_train, SEQ_LEN)
