@@ -47,7 +47,7 @@ else:
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
 LR_NOAM = hp.lr_noam
-MIN_TRAIN_STEPS = 2000
+MIN_TRAIN_STEPS = 4500
 MAXSTEPS = hp.maxstep
 PHASES_STEPS = [3000]
 PHASES_LR = [4e-6, 1e-6]
