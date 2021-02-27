@@ -70,7 +70,7 @@ RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向�
 D_INPUT = 1024
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
-load_ckpt_model = False
+load_ckpt_model = True
 
 if hp.server == 0:
     # path for USTC server
