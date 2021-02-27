@@ -706,7 +706,7 @@ def main(self):
     logging.info('Sequence Length: '+str(SEQ_LEN))
     logging.info('*' * 50+'\n')
 
-    run_training(data_train, data_valid, segment_info, score_record, 0)  # for training
+    run_training(data_train, data_test, segment_info, score_record, 0)  # for training
     # run_training(data_train, data_train, segment_info, score_record, 1)  # for testing
 
     # train_scheme = train_scheme_build_v3(data_train, SEQ_LEN)
