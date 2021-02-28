@@ -32,6 +32,7 @@ class Path:
     parser.add_argument('--multimask',default=1, type=int)
     parser.add_argument('--kfold', default=0, type=int)
     parser.add_argument('--repeat', default=10, type=int)
+    parser.add_argument('--observe', default=0, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -48,6 +49,7 @@ else:
 # global paras
 REPEAT_TIMES = hp.repeat  # 重复训练和测试的次数
 K_FOLD_MODE = hp.kfold  # 0-4，使用不同的集合划分
+OBSERVE = hp.observe
 
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
@@ -600,7 +602,7 @@ def evaluation_frame(pred_scores, test_vids, segment_info, score_record):
 
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def model_search(model_save_dir, kfold=False):
+def model_search(model_save_dir, observe):
     def takestep(name):
         return int(name.split('-')[0].split('S')[-1])
     # 找到要验证的模型名称
@@ -613,7 +615,7 @@ def model_search(model_save_dir, kfold=False):
     model_to_restore = list(set(model_to_restore))
     model_to_restore.sort(key=takestep)
 
-    if kfold:
+    if observe == 0:
         # 只取最高F1的模型
         model_kfold = []
         f1s = []
@@ -778,7 +780,7 @@ def main(self):
     model_scores = {}
     for i in range(REPEAT_TIMES):
         model_save_dir = model_save_base + hp.msd + '_%d/' % i
-        models_to_restore = model_search(model_save_dir, kfold=True)
+        models_to_restore = model_search(model_save_dir, observe=OBSERVE)
         for i in range(len(models_to_restore)):
             logging.info('-' * 20+str(i)+': '+models_to_restore[i].split('/')[-1]+'-' * 20)
             ckpt_model_path = models_to_restore[i]
