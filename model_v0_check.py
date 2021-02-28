@@ -588,8 +588,7 @@ def evaluation_frame(pred_scores, test_vids, segment_info, score_record):
         y_preds[vid] = y_pred
         pos += vlength
         label_pred = frame2shot(vid, segment_info, y_preds[vid])
-        # label_trues = score_record[vid]['keyshot_labels']
-        label_trues = [frame2shot(vid,segment_info,np.array(score_record[vid]['scores_avg']).reshape((1,vlength)))]
+        label_trues = score_record[vid]['keyshot_labels']
         for i in range(len(label_trues)):
             precision = np.sum(label_pred * label_trues[i]) / (np.sum(label_pred) + 1e-6)
             recall = np.sum(label_pred * label_trues[i]) / (np.sum(label_trues[i]) + 1e-6)
