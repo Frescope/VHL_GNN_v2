@@ -46,7 +46,7 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-REPEAT_TIMES = 10  # 重复训练和测试的次数
+REPEAT_TIMES = hp.repeat  # 重复训练和测试的次数
 K_FOLD_MODE = hp.kfold  # 0-4，使用不同的集合划分
 
 PRESTEPS = 0
