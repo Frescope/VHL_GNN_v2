@@ -161,6 +161,7 @@ if __name__ == '__main__':
     with open(SCORE_PATH, 'w') as file:
         json.dump(score_record_new, file, cls=NpEncoder)
 
+    # score_record_new = score_record
     max_f1_estimate(score_record_new, segment_info)
 
     print('Done !')

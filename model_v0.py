@@ -25,11 +25,13 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='tvsum_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=1e-6, type=float)
+    parser.add_argument('--lr_noam', default=2e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=45000, type=int)
     parser.add_argument('--pos_ratio',default=0.8, type=float)
     parser.add_argument('--multimask',default=1, type=int)
+    parser.add_argument('--kfold',default=0,type=int)
+    parser.add_argument('--repeat',default=1,type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -44,6 +46,9 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
+REPEAT_TIMES = 10  # 重复训练和测试的次数
+K_FOLD_MODE = hp.kfold  # 0-4，使用不同的集合划分
+
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
 LR_NOAM = hp.lr_noam
@@ -78,7 +83,7 @@ if hp.server == 0:
     VCAT_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_video_category.json'
     SEGINFO_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_segment_info.json'
     FEATURE_DIR = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_feature_googlenet_2fps/'
-    model_save_dir = r'/public/data0/users/hulinkang/model_HL_v2/'+hp.msd+'/'
+    model_save_base = r'/public/data0/users/hulinkang/model_HL_v2/'
     # ckpt_model_path = '../../model_HL_v4/tvsum_SA/STEP_5000'
     ckpt_model_path = '../../model_HL_v4/tvsum_SA/S20376-E24-L0.010669-F0.512'
 else:
@@ -86,8 +91,8 @@ else:
     SCORE_PATH = r'/data/linkang/VHL_GNN/tvsum_score_record.json'
     VCAT_PATH = r'/data/linkang/VHL_GNN/tvsum_video_category.json'
     SEGINFO_PATH = r'/data/linkang/VHL_GNN/tvsum_segment_info.json'
-    FEATURE_DIR = r'/data//linkang/VHL_GNN/tvsum_feature_googlenet_2fps/'
-    model_save_dir = r'/data/linkang/model_HL_v4/'+hp.msd+'/'
+    FEATURE_DIR = r'/data/linkang/VHL_GNN/tvsum_feature_googlenet_2fps/'
+    model_save_base = r'/data/linkang/model_HL_v4/'
     # ckpt_model_path = '../model_HL_v2/tvsum_SA/STEP_5000'
     ckpt_model_path = '../model_HL_v2/tvsum_SA/S20376-E24-L0.010669-F0.512'
 
@@ -139,6 +144,63 @@ def load_feature(score_record,video_category,feature_dir):
     logging.info('Valid Set: '+str(valid_vids))
     logging.info('Test Set: '+str(test_vids))
     return data_train, data_valid, data_test
+
+def f1_calc(pred,gts):
+    # 计算pred与所有gt的平均f1
+    f1s = []
+    for gt in gts:
+        precision = np.sum(pred * gt) / (np.sum(pred) + 1e-6)
+        recall = np.sum(pred * gt) / (np.sum(gt) + 1e-6)
+        f1s.append(2 * precision * recall / (precision + recall + 1e-6))
+    return np.array(f1s).mean()
+
+def max_f1_estimate(score_record, vids):
+    # 使用scores_avg作为预测，计算与各个summary的F1，作为对模型可能达到的最大F1的估计
+    f1_overall_greedy = []
+    for vid in vids:
+        label_trues = score_record[vid]['keyshot_labels']
+        label_greedy = np.array(score_record[vid]['label_greedy'])
+        f1_greedy = f1_calc(label_greedy,label_trues)
+        f1_overall_greedy.append(f1_greedy)
+    return np.array(f1_overall_greedy)
+
+def load_feature_5fold(score_record,video_category,feature_dir):
+    # 将数据划分为5部分，提取特征，每个部分都由各个类别各取一个视频组成
+    # split dataset
+    categories = list(video_category.keys())
+    subset_indexes = [[],[],[],[],[]]  # 5个列表，分别记录属于每个子集的索引
+    for cate in categories:
+        names = video_category[cate]
+        names.sort()
+        for i in range(len(names)):
+            subset_indexes[i].append(names[i])
+
+    # load data
+    vids = list(score_record.keys())
+    subsets = [{},{},{},{},{}]  # 5个字典，每个是一个数据子集
+    for vid in vids:
+        temp = {}
+        temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
+        temp['scores'] = np.array(score_record[vid]['scores'])
+        temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
+        temp['labels'] = np.array(score_record[vid]['label_greedy'])
+        temp['pos_index'] = np.where(temp['labels'] > 0)[0]
+        temp['neg_index'] = np.where(temp['labels'] < 1)[0]
+        for i in range(len(subset_indexes)):
+            index = subset_indexes[i]
+            if vid in index:
+                subsets[i][vid] = temp
+                break
+            logging.info(
+                vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels'].shape) +
+                ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
+
+    for i in range(len(subset_indexes)):
+        logging.info('Subset '+str(i)+str(subset_indexes[i]))
+        f1_subset = max_f1_estimate(score_record, subset_indexes[i])
+        # logging.info('Estimated F1: '+str(list(f1_subset)))
+        logging.info('Average Estimated F1: '+str(f1_subset.mean()))
+    return subsets
 
 def train_scheme_build_v3(data_train,seq_len):
     # 根据正负样本制定的train_scheme，取每个样本的左右领域与样本共同构成一个序列，分别得到正样本序列与负样本序列
@@ -538,7 +600,7 @@ def evaluation_frame(pred_scores, test_vids, segment_info, score_record):
 
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def run_training(data_train, data_test, segment_info, score_record, test_mode):
+def run_training(data_train, data_test, segment_info, score_record, test_mode, model_save_dir):
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
     max_f1 = MAX_F1
@@ -688,12 +750,31 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode):
     return
 
 def main(self):
+    # load data
     score_record, video_category, segment_info = load_info(SCORE_PATH, VCAT_PATH, SEGINFO_PATH)
-    data_train,data_valid,data_test = load_feature(score_record,video_category,FEATURE_DIR)
-    logging.info('Data loaded !')
+    subsets = load_feature_5fold(score_record, video_category, FEATURE_DIR)
 
+    # split data
+    data_train = {}
+    data_valid = {}
+    data_test = {}
+    for i in range(K_FOLD_MODE,K_FOLD_MODE+3):
+        j = i % 5
+        data_train.update(subsets[j])
+    data_valid.update(subsets[(K_FOLD_MODE+3) % 5])
+    data_test.update(subsets[(K_FOLD_MODE+4) % 5])
+    f1_train = max_f1_estimate(score_record, list(data_train.keys()))
+    f1_valid = max_f1_estimate(score_record, list(data_valid.keys()))
+    f1_test = max_f1_estimate(score_record, list(data_test.keys()))
+    logging.info('-'*20+'K-fold: '+str(K_FOLD_MODE)+'-'*20)
+    logging.info('Train Set Average Estimated F1: ' + str(f1_train.mean()))
+    logging.info('Valid Set Average Estimated F1: ' + str(f1_valid.mean()))
+    logging.info('Test Set Average Estimated F1: ' + str(f1_test.mean()))
+    logging.info('-'*50+'\n')
+
+    # info
     logging.info('*'*20+'Settings'+'*'*20)
-    logging.info('Model Dir: '+model_save_dir)
+    logging.info('Model Base: '+model_save_base+hp.msd)
     logging.info('Training Phases: ' + str(PHASES_STEPS))
     logging.info('Phase LR: '+str(PHASES_LR))
     logging.info('WarmUp: ' + str(WARMUP_STEP))
@@ -706,13 +787,21 @@ def main(self):
     logging.info('Sequence Length: '+str(SEQ_LEN))
     logging.info('*' * 50+'\n')
 
-    run_training(data_train, data_test, segment_info, score_record, 0)  # for training
-    # run_training(data_train, data_train, segment_info, score_record, 1)  # for testing
+    # repeat training for test
+    for i in range(REPEAT_TIMES):
+        model_save_dir = model_save_base + hp.msd + '_%d/' % i
+        logging.info('*'*10+str(i)+': '+model_save_dir+'*'*10)
+        logging.info('*'*60)
+        run_training(data_train, data_valid, segment_info, score_record, 0, model_save_dir)  # for training
+        logging.info('*' * 60)
 
-    # train_scheme = train_scheme_build_v3(data_train, SEQ_LEN)
-    # for i in range(1000):
-    #     observe = get_batch_train_v2(data_train, train_scheme, i, GPU_NUM, BATCH_SIZE, SEQ_LEN)
-    #     print(i)
+    # run_training(data_train, data_test, segment_info, score_record, 0)  # for training
+    # # run_training(data_train, data_train, segment_info, score_record, 1)  # for testing
+    #
+    # # train_scheme = train_scheme_build_v3(data_train, SEQ_LEN)
+    # # for i in range(1000):
+    # #     observe = get_batch_train_v2(data_train, train_scheme, i, GPU_NUM, BATCH_SIZE, SEQ_LEN)
+    # #     print(i)
 
 if __name__ == "__main__":
     tf.app.run()
