@@ -156,12 +156,12 @@ if __name__ == '__main__':
     with open(SEGINFO_PATH, 'r') as file:
         segment_info = json.load(file)
 
-    score_record_new = label_process(score_record, segment_info, KEY_FRAME_RATIO)
+    # score_record_new = label_process(score_record, segment_info, KEY_FRAME_RATIO)
+    #
+    # with open(SCORE_PATH, 'w') as file:
+    #     json.dump(score_record_new, file, cls=NpEncoder)
 
-    with open(SCORE_PATH, 'w') as file:
-        json.dump(score_record_new, file, cls=NpEncoder)
-
-    # score_record_new = score_record
+    score_record_new = score_record
     max_f1_estimate(score_record_new, segment_info)
 
     print('Done !')

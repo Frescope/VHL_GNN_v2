@@ -30,7 +30,7 @@ class Path:
     parser.add_argument('--maxstep', default=45000, type=int)
     parser.add_argument('--pos_ratio',default=0.8, type=float)
     parser.add_argument('--multimask',default=1, type=int)
-    parser.add_argument('--kfold',default=2,type=int)
+    parser.add_argument('--kfold',default=0,type=int)
     parser.add_argument('--repeat',default=1,type=int)
 
 hparams = Path()
@@ -157,8 +157,11 @@ def f1_calc(pred,gts):
 def max_f1_estimate(score_record, vids):
     # 使用scores_avg作为预测，计算与各个summary的F1，作为对模型可能达到的最大F1的估计
     f1_overall_greedy = []
+    with open(SEGINFO_PATH,'r') as file:
+        segment_info = json.load(file)
     for vid in vids:
         label_trues = score_record[vid]['keyshot_labels']
+        # label_trues = [frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))]
         label_greedy = np.array(score_record[vid]['label_greedy'])
         f1_greedy = f1_calc(label_greedy,label_trues)
         f1_overall_greedy.append(f1_greedy)
@@ -166,7 +169,8 @@ def max_f1_estimate(score_record, vids):
 
 def load_feature_5fold(score_record,video_category,feature_dir):
     # 将数据划分为5部分，提取特征，每个部分都由各个类别各取一个视频组成
-    # split dataset
+
+    # # split dataset
     # categories = list(video_category.keys())
     # subset_indexes = [[],[],[],[],[]]  # 5个列表，分别记录属于每个子集的索引
     # for cate in categories:
@@ -178,11 +182,11 @@ def load_feature_5fold(score_record,video_category,feature_dir):
 
     # load data
     subset_indexes = [[],[],[],[],[]]
-    subset_indexes[0] = ['kLxoNp-UchI', 'xxdtq8mxegs', '37rzWOQsNIw', '4wU_LUjG5Ic', 'J0nA4VgnoCo', 'VuWGsYPqAX8', 'HT5vyqe0Xaw', 'GsAD1KT1xo8', 'Se3oxnaPsz0', 'eQu1rNs0an0']
-    subset_indexes[1] = ['E11zDS9XGzg', '0tmA_C6XwfM', 'Yi4Ij2NM7U4', '91IHQYk1IQM', 'AwmHb44_ouw', '_xMr-HKMfVA', 'sTEELN-vY30', 'cjibtmSLxQ4', 'WxtbjNsCQ8A', 'qqR6AEXwxoQ']
-    subset_indexes[2] = ['jcoYJXDG9sw', 'i3wAGJaaktw', 'Hl-__g2gn_A', 'fWutDQy1nnY', '98MoyGZKHXc', 'xmEERLqJ2kU', 'akI8YFjEmUw', 'PJrm840pAUI', 'oDXZc0tZe04', 'JgHubY5Vw3Y']
-    subset_indexes[3] = ['-esJrBWj2d8', 'Bhxk-O1Y7Ho', 'LRw_obCPUt0', 'z_6gVvQb2d0', 'XzYM3PfTM4w', 'byxOvuiIJV0', 'xwqBXPGE9pQ', 'XkqCExn6_Us', 'EE-bNr36nyA', 'EYqVtI9YWJA']
-    subset_indexes[4] = ['NyBmCxDoHJU', '3eYKfiOEJNs', 'WG0MBPpPC6I', 'RBCABdttQmI', 'gzDbaEs1Rlg', 'JKpqYvAdIsw', 'vdmoEJ5YbrQ', 'b626MiF1ew4', 'uGu_10sucQo', 'iVt07TCkFM0']
+    subset_indexes[0] = ['kLxoNp-UchI', '0tmA_C6XwfM', 'Yi4Ij2NM7U4', 'RBCABdttQmI', 'XzYM3PfTM4w', 'VuWGsYPqAX8', 'vdmoEJ5YbrQ', 'GsAD1KT1xo8', 'Se3oxnaPsz0', 'EYqVtI9YWJA']
+    subset_indexes[1] = ['E11zDS9XGzg', 'Bhxk-O1Y7Ho', 'Hl-__g2gn_A', '91IHQYk1IQM', '98MoyGZKHXc', '_xMr-HKMfVA', 'xwqBXPGE9pQ', 'XkqCExn6_Us', 'EE-bNr36nyA', 'qqR6AEXwxoQ']
+    subset_indexes[2] = ['-esJrBWj2d8', '3eYKfiOEJNs', 'WG0MBPpPC6I', 'z_6gVvQb2d0', 'AwmHb44_ouw', 'xmEERLqJ2kU', 'akI8YFjEmUw', 'cjibtmSLxQ4', 'WxtbjNsCQ8A', 'JgHubY5Vw3Y']
+    subset_indexes[3] = ['NyBmCxDoHJU', 'xxdtq8mxegs', 'LRw_obCPUt0', '4wU_LUjG5Ic', 'J0nA4VgnoCo', 'JKpqYvAdIsw', 'sTEELN-vY30', 'PJrm840pAUI', 'uGu_10sucQo', 'iVt07TCkFM0']
+    subset_indexes[4] = ['jcoYJXDG9sw', 'i3wAGJaaktw', '37rzWOQsNIw', 'fWutDQy1nnY', 'gzDbaEs1Rlg', 'byxOvuiIJV0', 'HT5vyqe0Xaw', 'b626MiF1ew4', 'oDXZc0tZe04', 'eQu1rNs0an0']
 
     vids = list(score_record.keys())
     subsets = [{},{},{},{},{}]  # 5个字典，每个是一个数据子集
