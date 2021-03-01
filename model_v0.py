@@ -750,12 +750,12 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
 
             if step % 2000 == 0 and step > 0:
                 model_path = model_save_dir + 'S%d-E%d' % (step+PRESTEPS, epoch)
-                saver_overall.save(sess, model_path)
+                # saver_overall.save(sess, model_path)
                 logging.info('Model Saved: '+str(step + PRESTEPS))
 
             # saving final model
         model_path = model_save_dir + 'S%d' % (MAXSTEPS + PRESTEPS)
-        saver_overall.save(sess, model_path)
+        # saver_overall.save(sess, model_path)
         logging.info('Model Saved: '+str(MAXSTEPS + PRESTEPS))
 
     return
