@@ -803,7 +803,7 @@ def main(self):
         model_save_dir = model_save_base + hp.msd + '_%d/' % i
         logging.info('*'*10+str(i)+': '+model_save_dir+'*'*10)
         logging.info('*'*60)
-        run_training(data_train, data_test, segment_info, score_record, 0, model_save_dir)  # for training
+        run_training(data_train, data_valid, segment_info, score_record, 0, model_save_dir)  # for training
         logging.info('*' * 60)
 
     # run_training(data_train, data_test, segment_info, score_record, 0)  # for training
