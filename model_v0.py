@@ -167,7 +167,7 @@ def max_f1_estimate(score_record, vids):
         f1_overall_greedy.append(f1_greedy)
     return np.array(f1_overall_greedy)
 
-def load_feature_5fold(score_record,video_category,feature_dir):
+def load_feature_5fold(score_record,video_category,segment_info,feature_dir):
     # 将数据划分为5部分，提取特征，每个部分都由各个类别各取一个视频组成
 
     # # split dataset
@@ -196,15 +196,16 @@ def load_feature_5fold(score_record,video_category,feature_dir):
         temp['scores'] = np.array(score_record[vid]['scores'])
         temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
         temp['labels'] = np.array(score_record[vid]['label_greedy'])
-        temp['pos_index'] = np.where(temp['labels'] > 0)[0]
-        temp['neg_index'] = np.where(temp['labels'] < 1)[0]
+        temp['labels_avg'] = frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))
+        temp['pos_index'] = np.where(temp['labels_avg'] > 0)[0]
+        temp['neg_index'] = np.where(temp['labels_avg'] < 1)[0]
         for i in range(len(subset_indexes)):
             index = subset_indexes[i]
             if vid in index:
                 subsets[i][vid] = temp
                 break
             logging.info(
-                vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels'].shape) +
+                vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels_avg'].shape) +
                 ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
 
     for i in range(len(subset_indexes)):
@@ -223,7 +224,7 @@ def train_scheme_build_v3(data_train,seq_len):
     pos_list = []
     neg_list = []
     for vid in data_train:
-        label = data_train[vid]['labels']
+        label = data_train[vid]['labels_avg']
         vlength = len(label)
         pos_index = data_train[vid]['pos_index']
         neg_index = data_train[vid]['neg_index']
@@ -277,7 +278,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
     labels = []
     for i in range(len(batch_index)):
         vid,seq_start,seq_end,sample_pos = batch_index[i]
-        vlength = len(data[vid]['labels'])
+        vlength = len(data[vid]['labels_avg'])
         seq_end = min(vlength,seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
@@ -289,7 +290,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
-        labels.append(data[vid]['labels'][sample_pos])
+        labels.append(data[vid]['labels_avg'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
     labels = np.array(labels).reshape((gpu_num * bc,))
@@ -346,7 +347,7 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     labels = []
     for i in range(len(batch_index)):
         vid,seq_start,seq_end,sample_pos = batch_index[i]
-        vlength = len(data[vid]['labels'])
+        vlength = len(data[vid]['labels_avg'])
         seq_end = min(vlength,seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
@@ -358,7 +359,7 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
-        labels.append(data[vid]['labels'][sample_pos])
+        labels.append(data[vid]['labels_avg'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
     labels = np.array(labels).reshape((gpu_num * bc,))
@@ -763,7 +764,7 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
 def main(self):
     # load data
     score_record, video_category, segment_info = load_info(SCORE_PATH, VCAT_PATH, SEGINFO_PATH)
-    subsets = load_feature_5fold(score_record, video_category, FEATURE_DIR)
+    subsets = load_feature_5fold(score_record, video_category, segment_info, FEATURE_DIR)
 
     # split data
     data_train = {}
