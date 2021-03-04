@@ -25,7 +25,7 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=2e-6, type=float)
+    parser.add_argument('--lr_noam', default=5e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=45000, type=int)
     parser.add_argument('--pos_ratio',default=0.8, type=float)

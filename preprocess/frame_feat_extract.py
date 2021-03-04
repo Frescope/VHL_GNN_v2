@@ -14,7 +14,7 @@ import os
 FRAME_BASE = r'/data/linkang/SumMe/frame_2fps/'
 FEATURE_BASE = r'/data/linkang/VHL_GNN/summe_feature_googlenet_2fps/'
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 def main():
     if not os.path.isdir(FEATURE_BASE):
