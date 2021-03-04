@@ -206,17 +206,17 @@ def self_attention(seq_input, score, multihead_mask, seq_len, num_blocks, num_he
         attention_list = []
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
-                # # self-attention
-                # enc, attention = multihead_attention(queries=enc,
-                #                           keys=enc,
-                #                           values=enc,
-                #                           key_masks=src_masks,
-                #                           multihead_mask=multihead_mask,
-                #                           num_heads=num_heads,
-                #                           dropout_rate=drop_out,
-                #                           training=training,
-                #                           causality=False)
-                # attention_list.append(attention)
+                # self-attention
+                enc, attention = multihead_attention(queries=enc,
+                                          keys=enc,
+                                          values=enc,
+                                          key_masks=src_masks,
+                                          multihead_mask=multihead_mask,
+                                          num_heads=num_heads,
+                                          dropout_rate=drop_out,
+                                          training=training,
+                                          causality=False)
+                attention_list.append(attention)
                 # feed forward
                 enc = ff(enc, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
 
