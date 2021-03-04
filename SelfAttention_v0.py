@@ -92,7 +92,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
 
-    return outputs, km
+    return outputs, attention
 
 def mask(inputs, key_masks=None, multihead_mask=None, type=None):
     """Masks paddings on keys or queries to inputs
@@ -184,8 +184,6 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
         # Outer layer
         # outputs = tf.layers.dropout(tf.layers.dense(outputs, num_units[1]), dropout_rate)
         outputs = tf.layers.dense(outputs, num_units[1])
-
-
 
         # Normalize
         outputs = tf.layers.dropout(ln(outputs), dropout_rate)

@@ -17,13 +17,13 @@ from tools.knapsack_iter import knapSack
 class Path:
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default='3',type=str)
-    parser.add_argument('--num_heads',default=8,type=int)
-    parser.add_argument('--num_blocks',default=5,type=int)
-    parser.add_argument('--seq_len',default=11,type=int)
+    parser.add_argument('--num_heads',default=64,type=int)
+    parser.add_argument('--num_blocks',default=4,type=int)
+    parser.add_argument('--seq_len',default=70,type=int)
     parser.add_argument('--bc',default=10,type=int)
     parser.add_argument('--dropout',default='0.15',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
-    parser.add_argument('--msd', default='SA', type=str)
+    parser.add_argument('--msd', default='tvsum_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--lr_noam', default=2e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
@@ -32,7 +32,6 @@ class Path:
     parser.add_argument('--multimask',default=1, type=int)
     parser.add_argument('--kfold',default=0,type=int)
     parser.add_argument('--repeat',default=1,type=int)
-    parser.add_argument('--dataset',default='tvsum',type=str)
 
 hparams = Path()
 parser = hparams.parser
@@ -85,60 +84,66 @@ if hp.server == 0:
     SEGINFO_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_segment_info.json'
     FEATURE_DIR = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_feature_googlenet_2fps/'
     model_save_base = r'/public/data0/users/hulinkang/model_HL_v2/'
+    # ckpt_model_path = '../../model_HL_v4/tvsum_SA/STEP_5000'
     ckpt_model_path = '../../model_HL_v4/tvsum_SA/S20376-E24-L0.010669-F0.512'
 else:
     # path for USTC servers
-    SCORE_PATH = r'/data/linkang/VHL_GNN/'+hp.dataset+'_score_record.json'
+    SCORE_PATH = r'/data/linkang/VHL_GNN/tvsum_score_record.json'
     VCAT_PATH = r'/data/linkang/VHL_GNN/tvsum_video_category.json'
-    SEGINFO_PATH = r'/data/linkang/VHL_GNN/'+hp.dataset+'_segment_info.json'
-    FEATURE_DIR = r'/data/linkang/VHL_GNN/'+hp.dataset+'_feature_googlenet_2fps/'
+    SEGINFO_PATH = r'/data/linkang/VHL_GNN/tvsum_segment_info.json'
+    FEATURE_DIR = r'/data/linkang/VHL_GNN/tvsum_feature_googlenet_2fps/'
     model_save_base = r'/data/linkang/model_HL_v4/'
-    ckpt_model_path = '../model_HL_v2/'+hp.dataset+'_SA/S20376-E24-L0.010669-F0.512'
+    # ckpt_model_path = '../model_HL_v2/tvsum_SA/STEP_5000'
+    ckpt_model_path = '../model_HL_v2/tvsum_SA/S20376-E24-L0.010669-F0.512'
 
 logging.basicConfig(level=logging.INFO)
 
-def load_info(path):
-    with open(path,'r') as file:
-        info = json.load(file)
-    return info
+def load_info(score_path,vcat_path,seginfo_path):
+    with open(score_path,'r') as file:
+        score_record = json.load(file)
+    with open(vcat_path,'r') as file:
+        video_category = json.load(file)
+    with open(seginfo_path,'r') as file:
+        segment_info = json.load(file)
+    return score_record, video_category, segment_info
 
-# def load_feature(score_record,video_category,feature_dir):
-#     # split dataset
-#     categories = list(video_category.keys())
-#     train_vids = []
-#     valid_vids = []
-#     test_vids = []
-#     for cate in categories:
-#         names = video_category[cate]
-#         names.sort()
-#         valid_vids.append(names.pop())
-#         test_vids.append(names.pop())
-#         train_vids += names
-#
-#     # load data
-#     vids = list(score_record.keys())
-#     data_train = {}
-#     data_valid = {}
-#     data_test = {}
-#     for vid in vids:
-#         temp = {}
-#         temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
-#         temp['scores'] = np.array(score_record[vid]['scores'])
-#         temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
-#         temp['labels'] = np.array(score_record[vid]['label_greedy'])
-#         temp['pos_index'] = np.where(temp['labels'] > 0)[0]
-#         temp['neg_index'] = np.where(temp['labels'] < 1)[0]
-#         if vid in train_vids:
-#             data_train[vid] = temp
-#         elif vid in valid_vids:
-#             data_valid[vid] = temp
-#         else:
-#             data_test[vid] = temp
-#         logging.info(vid+': '+str(temp['feature'].shape)+str(temp['scores'].shape)+str(temp['labels'].shape)+
-#                      ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
-#     logging.info('Valid Set: '+str(valid_vids))
-#     logging.info('Test Set: '+str(test_vids))
-#     return data_train, data_valid, data_test
+def load_feature(score_record,video_category,feature_dir):
+    # split dataset
+    categories = list(video_category.keys())
+    train_vids = []
+    valid_vids = []
+    test_vids = []
+    for cate in categories:
+        names = video_category[cate]
+        names.sort()
+        valid_vids.append(names.pop())
+        test_vids.append(names.pop())
+        train_vids += names
+
+    # load data
+    vids = list(score_record.keys())
+    data_train = {}
+    data_valid = {}
+    data_test = {}
+    for vid in vids:
+        temp = {}
+        temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
+        temp['scores'] = np.array(score_record[vid]['scores'])
+        temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
+        temp['labels'] = np.array(score_record[vid]['label_greedy'])
+        temp['pos_index'] = np.where(temp['labels'] > 0)[0]
+        temp['neg_index'] = np.where(temp['labels'] < 1)[0]
+        if vid in train_vids:
+            data_train[vid] = temp
+        elif vid in valid_vids:
+            data_valid[vid] = temp
+        else:
+            data_test[vid] = temp
+        logging.info(vid+': '+str(temp['feature'].shape)+str(temp['scores'].shape)+str(temp['labels'].shape)+
+                     ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
+    logging.info('Valid Set: '+str(valid_vids))
+    logging.info('Test Set: '+str(test_vids))
+    return data_train, data_valid, data_test
 
 def f1_calc(pred,gts):
     # 计算pred与所有gt的平均f1
@@ -152,7 +157,8 @@ def f1_calc(pred,gts):
 def max_f1_estimate(score_record, vids):
     # 使用scores_avg作为预测，计算与各个summary的F1，作为对模型可能达到的最大F1的估计
     f1_overall_greedy = []
-    segment_info = load_info(SEGINFO_PATH)
+    with open(SEGINFO_PATH,'r') as file:
+        segment_info = json.load(file)
     for vid in vids:
         label_trues = score_record[vid]['keyshot_labels']
         # label_trues = [frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))]
@@ -161,10 +167,10 @@ def max_f1_estimate(score_record, vids):
         f1_overall_greedy.append(f1_greedy)
     return np.array(f1_overall_greedy)
 
-def load_feature_5fold(score_record,segment_info,feature_dir,**kwargs):
+def load_feature_5fold(score_record,video_category,segment_info,feature_dir):
     # 将数据划分为5部分，提取特征，每个部分都由各个类别各取一个视频组成
+
     # # split dataset
-    # video_vategory = kwargs['video_category']
     # categories = list(video_category.keys())
     # subset_indexes = [[],[],[],[],[]]  # 5个列表，分别记录属于每个子集的索引
     # for cate in categories:
@@ -175,42 +181,38 @@ def load_feature_5fold(score_record,segment_info,feature_dir,**kwargs):
     #         subset_indexes[i].append(names[i])
 
     # load data
-    vids = list(score_record.keys())
-    vids.sort()
     subset_indexes = [[],[],[],[],[]]
-    if kwargs['dataset'] == 'tvsum':
-        subset_indexes[0] = ['kLxoNp-UchI', '0tmA_C6XwfM', 'Yi4Ij2NM7U4', 'RBCABdttQmI', 'XzYM3PfTM4w', 'VuWGsYPqAX8', 'vdmoEJ5YbrQ', 'GsAD1KT1xo8', 'Se3oxnaPsz0', 'EYqVtI9YWJA']
-        subset_indexes[1] = ['E11zDS9XGzg', 'Bhxk-O1Y7Ho', 'Hl-__g2gn_A', '91IHQYk1IQM', '98MoyGZKHXc', '_xMr-HKMfVA', 'xwqBXPGE9pQ', 'XkqCExn6_Us', 'EE-bNr36nyA', 'qqR6AEXwxoQ']
-        subset_indexes[2] = ['-esJrBWj2d8', '3eYKfiOEJNs', 'WG0MBPpPC6I', 'z_6gVvQb2d0', 'AwmHb44_ouw', 'xmEERLqJ2kU', 'akI8YFjEmUw', 'cjibtmSLxQ4', 'WxtbjNsCQ8A', 'JgHubY5Vw3Y']
-        subset_indexes[3] = ['NyBmCxDoHJU', 'xxdtq8mxegs', 'LRw_obCPUt0', '4wU_LUjG5Ic', 'J0nA4VgnoCo', 'JKpqYvAdIsw', 'sTEELN-vY30', 'PJrm840pAUI', 'uGu_10sucQo', 'iVt07TCkFM0']
-        subset_indexes[4] = ['jcoYJXDG9sw', 'i3wAGJaaktw', '37rzWOQsNIw', 'fWutDQy1nnY', 'gzDbaEs1Rlg', 'byxOvuiIJV0', 'HT5vyqe0Xaw', 'b626MiF1ew4', 'oDXZc0tZe04', 'eQu1rNs0an0']
-        # subset_indexes[0] = ['kLxoNp-UchI','E11zDS9XGzg','-esJrBWj2d8','NyBmCxDoHJU','jcoYJXDG9sw']
-        # subset_indexes[1] = ['0tmA_C6XwfM','Bhxk-O1Y7Ho','3eYKfiOEJNs','xxdtq8mxegs','i3wAGJaaktw']
-        # subset_indexes[2] = ['Yi4Ij2NM7U4','Hl-__g2gn_A','WG0MBPpPC6I','LRw_obCPUt0','37rzWOQsNIw']
-        # subset_indexes[3] = ['RBCABdttQmI','91IHQYk1IQM','z_6gVvQb2d0','4wU_LUjG5Ic','fWutDQy1nnY']
-        # subset_indexes[4] = ['XzYM3PfTM4w','98MoyGZKHXc','AwmHb44_ouw','J0nA4VgnoCo','gzDbaEs1Rlg']
-    elif kwargs['dataset'] == 'summe':
-        for i in range(5):
-            subset_indexes[i] = vids[i*5:(i+1)*5]
+    subset_indexes[0] = ['kLxoNp-UchI', '0tmA_C6XwfM', 'Yi4Ij2NM7U4', 'RBCABdttQmI', 'XzYM3PfTM4w', 'VuWGsYPqAX8', 'vdmoEJ5YbrQ', 'GsAD1KT1xo8', 'Se3oxnaPsz0', 'EYqVtI9YWJA']
+    subset_indexes[1] = ['E11zDS9XGzg', 'Bhxk-O1Y7Ho', 'Hl-__g2gn_A', '91IHQYk1IQM', '98MoyGZKHXc', '_xMr-HKMfVA', 'xwqBXPGE9pQ', 'XkqCExn6_Us', 'EE-bNr36nyA', 'qqR6AEXwxoQ']
+    subset_indexes[2] = ['-esJrBWj2d8', '3eYKfiOEJNs', 'WG0MBPpPC6I', 'z_6gVvQb2d0', 'AwmHb44_ouw', 'xmEERLqJ2kU', 'akI8YFjEmUw', 'cjibtmSLxQ4', 'WxtbjNsCQ8A', 'JgHubY5Vw3Y']
+    subset_indexes[3] = ['NyBmCxDoHJU', 'xxdtq8mxegs', 'LRw_obCPUt0', '4wU_LUjG5Ic', 'J0nA4VgnoCo', 'JKpqYvAdIsw', 'sTEELN-vY30', 'PJrm840pAUI', 'uGu_10sucQo', 'iVt07TCkFM0']
+    subset_indexes[4] = ['jcoYJXDG9sw', 'i3wAGJaaktw', '37rzWOQsNIw', 'fWutDQy1nnY', 'gzDbaEs1Rlg', 'byxOvuiIJV0', 'HT5vyqe0Xaw', 'b626MiF1ew4', 'oDXZc0tZe04', 'eQu1rNs0an0']
 
+    # subset_indexes[0] = ['kLxoNp-UchI','E11zDS9XGzg','-esJrBWj2d8','NyBmCxDoHJU','jcoYJXDG9sw']
+    # subset_indexes[1] = ['0tmA_C6XwfM','Bhxk-O1Y7Ho','3eYKfiOEJNs','xxdtq8mxegs','i3wAGJaaktw']
+    # subset_indexes[2] = ['Yi4Ij2NM7U4','Hl-__g2gn_A','WG0MBPpPC6I','LRw_obCPUt0','37rzWOQsNIw']
+    # subset_indexes[3] = ['RBCABdttQmI','91IHQYk1IQM','z_6gVvQb2d0','4wU_LUjG5Ic','fWutDQy1nnY']
+    # subset_indexes[4] = ['XzYM3PfTM4w','98MoyGZKHXc','AwmHb44_ouw','J0nA4VgnoCo','gzDbaEs1Rlg']
+
+    vids = list(score_record.keys())
     subsets = [{},{},{},{},{}]  # 5个字典，每个是一个数据子集
     for vid in vids:
         temp = {}
         temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
         temp['scores'] = np.array(score_record[vid]['scores'])
         temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
-        temp['labels'] = np.array(score_record[vid]['label_greedy'])  # score_record中，label_greedy是用贪心策略求得的标签，labels是用取平均+排序得到的
-        temp['labels_avg'] = frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))  # 这里用scores_avg+KTS求出avg标签，另一种方法是使用取平均+排序得到的labels
-        temp['pos_index'] = np.where(temp['labels'] > 0)[0]
-        temp['neg_index'] = np.where(temp['labels'] < 1)[0]
+        temp['labels'] = np.array(score_record[vid]['label_greedy'])
+        temp['labels_avg'] = frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))
+        temp['pos_index'] = np.where(temp['labels_avg'] > 0)[0]
+        temp['neg_index'] = np.where(temp['labels_avg'] < 1)[0]
         for i in range(len(subset_indexes)):
             index = subset_indexes[i]
             if vid in index:
                 subsets[i][vid] = temp
                 break
-        logging.info(
-            vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels'].shape) +
-            ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
+            logging.info(
+                vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels_avg'].shape) +
+                ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
 
     for i in range(len(subset_indexes)):
         logging.info('Subset '+str(i)+str(subset_indexes[i]))
@@ -228,7 +230,7 @@ def train_scheme_build_v3(data_train,seq_len):
     pos_list = []
     neg_list = []
     for vid in data_train:
-        label = data_train[vid]['labels']
+        label = data_train[vid]['labels_avg']
         vlength = len(label)
         pos_index = data_train[vid]['pos_index']
         neg_index = data_train[vid]['neg_index']
@@ -282,7 +284,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
     labels = []
     for i in range(len(batch_index)):
         vid,seq_start,seq_end,sample_pos = batch_index[i]
-        vlength = len(data[vid]['labels'])
+        vlength = len(data[vid]['labels_avg'])
         seq_end = min(vlength,seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
@@ -294,7 +296,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
-        labels.append(data[vid]['labels'][sample_pos])
+        labels.append(data[vid]['labels_avg'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
     labels = np.array(labels).reshape((gpu_num * bc,))
@@ -351,7 +353,7 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     labels = []
     for i in range(len(batch_index)):
         vid,seq_start,seq_end,sample_pos = batch_index[i]
-        vlength = len(data[vid]['labels'])
+        vlength = len(data[vid]['labels_avg'])
         seq_end = min(vlength,seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
@@ -363,7 +365,7 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
-        labels.append(data[vid]['labels'][sample_pos])
+        labels.append(data[vid]['labels_avg'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
     labels = np.array(labels).reshape((gpu_num * bc,))
@@ -596,7 +598,6 @@ def evaluation_frame(pred_scores, test_vids, segment_info, score_record):
     PRE_values = []
     REC_values = []
     F1_values = []
-    F1_greedy = []
     for vid in test_vids:
         vlength = len(score_record[vid]['labels'])
         y_pred = np.array(preds_c[pos:pos+vlength])
@@ -611,19 +612,9 @@ def evaluation_frame(pred_scores, test_vids, segment_info, score_record):
             PRE_values.append(precision)
             REC_values.append(recall)
             F1_values.append(2 * precision * recall / (precision + recall + 1e-6))
-
-        label_greedy = score_record[vid]['label_greedy']
-        p = np.sum(label_pred * label_greedy) / (np.sum(label_pred) + 1e-6)
-        r = np.sum(label_pred * label_greedy) / (np.sum(label_greedy) + 1e-6)
-        f = (2 * p * r) / (p + r + 1e-6)
-        F1_greedy.append(f)
-
     PRE_values = np.array(PRE_values)
     REC_values = np.array(REC_values)
     F1_values = np.array(F1_values)
-
-    print('Greedy: ')
-    print(np.array(F1_greedy).mean())
 
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
@@ -761,7 +752,7 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
                     if f > max_f1:
                         max_f1 = f
                     model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step,epoch,np.mean(loss_array),f)
-                    # saver_overall.save(sess, model_path)
+                    saver_overall.save(sess, model_path)
                     logging.info('Model Saved: '+model_path+'\n')
 
             if step % 2000 == 0 and step > 0:
@@ -778,10 +769,8 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
 
 def main(self):
     # load data
-    score_record = load_info(SCORE_PATH)
-    segment_info = load_info(SEGINFO_PATH)
-    video_category = load_info(VCAT_PATH)
-    subsets = load_feature_5fold(score_record, segment_info, FEATURE_DIR, video_category=video_category, dataset=hp.dataset)
+    score_record, video_category, segment_info = load_info(SCORE_PATH, VCAT_PATH, SEGINFO_PATH)
+    subsets = load_feature_5fold(score_record, video_category, segment_info, FEATURE_DIR)
 
     # split data
     data_train = {}
@@ -823,6 +812,14 @@ def main(self):
         logging.info('*'*60)
         run_training(data_train, data_valid, segment_info, score_record, 0, model_save_dir)  # for training
         logging.info('*' * 60)
+
+    # run_training(data_train, data_test, segment_info, score_record, 0)  # for training
+    # # run_training(data_train, data_train, segment_info, score_record, 1)  # for testing
+    #
+    # # train_scheme = train_scheme_build_v3(data_train, SEQ_LEN)
+    # # for i in range(1000):
+    # #     observe = get_batch_train_v2(data_train, train_scheme, i, GPU_NUM, BATCH_SIZE, SEQ_LEN)
+    # #     print(i)
 
 if __name__ == "__main__":
     tf.app.run()
