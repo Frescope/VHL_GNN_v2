@@ -222,4 +222,4 @@ def self_attention(seq_input, score, multihead_mask, seq_len, num_blocks, num_he
 
         logits = tf.squeeze(tf.layers.dense(enc,1))  # bc*seq_len
 
-    return logits, attention_list 
+    return logits, attention_list

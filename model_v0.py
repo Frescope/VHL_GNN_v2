@@ -761,7 +761,7 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
                     if f > max_f1:
                         max_f1 = f
                     model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step,epoch,np.mean(loss_array),f)
-                    # saver_overall.save(sess, model_path)
+                    saver_overall.save(sess, model_path)
                     logging.info('Model Saved: '+model_path+'\n')
 
             if step % 2000 == 0 and step > 0:
