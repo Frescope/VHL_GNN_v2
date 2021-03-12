@@ -1,4 +1,5 @@
-# 新实验，实验1
+# 在utc数据集上的实验，读取每个视频的shot（frame）特征，构建序列，取序列中间作为采样点，以固定比例的正负例训练
+# 测试时取2%左右的输出标记为summary，计算基于二分图匹配的F1
 import os
 import time
 import numpy as np
@@ -9,30 +10,33 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import random
 import logging
 import argparse
+import scipy.io
+import h5py
 import SelfAttention_v0
 from SelfAttention_v0 import self_attention
 from SelfAttention_v0 import D_MODEL
-from tools.knapsack_iter import knapSack
+import networkx as nx
+
 
 class Path:
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
-    parser.add_argument('--num_blocks',default=5,type=int)
+    parser.add_argument('--num_blocks',default=4,type=int)
     parser.add_argument('--seq_len',default=11,type=int)
     parser.add_argument('--bc',default=10,type=int)
-    parser.add_argument('--dropout',default='0.15',type=float)
+    parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
-    parser.add_argument('--msd', default='SA', type=str)
+    parser.add_argument('--msd', default='utc_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=2e-6, type=float)
+    parser.add_argument('--lr_noam', default=2e-5, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=45000, type=int)
-    parser.add_argument('--pos_ratio',default=0.8, type=float)
+    parser.add_argument('--pos_ratio',default=0.1, type=float)
     parser.add_argument('--multimask',default=1, type=int)
-    parser.add_argument('--kfold',default=0,type=int)
+    parser.add_argument('--kfold',default=3,type=int)
     parser.add_argument('--repeat',default=1,type=int)
-    parser.add_argument('--dataset',default='tvsum',type=str)
+    parser.add_argument('--dataset',default='utc',type=str)
 
 hparams = Path()
 parser = hparams.parser
@@ -48,7 +52,7 @@ else:
 
 # global paras
 REPEAT_TIMES = hp.repeat  # 重复训练和测试的次数
-K_FOLD_MODE = hp.kfold  # 0-4，使用不同的集合划分
+K_FOLD_MODE = hp.kfold  # 1-4，使用不同的集合划分
 
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
@@ -71,160 +75,73 @@ SEQ_LEN = hp.seq_len
 NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 MUlTIHEAD_ATTEN = hp.multimask
-RECEP_SCOPES = 6#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
+RECEP_SCOPES = 2#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
-D_INPUT = 1024
+D_INPUT = 2048
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
 load_ckpt_model = False
 
 if hp.server == 0:
     # path for USTC server
-    SCORE_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_score_record.json'
-    VCAT_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_video_category.json'
-    SEGINFO_PATH = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_segment_info.json'
-    FEATURE_DIR = r'/public/data0/users/hulinkang/tvsum/VHL_GNN_v2/tvsum_feature_googlenet_2fps/'
-    model_save_base = r'/public/data0/users/hulinkang/model_HL_v2/'
-    ckpt_model_path = '../../model_HL_v4/tvsum_SA/S20376-E24-L0.010669-F0.512'
+    FEATURE_BASE = r'/public/data0/users/hulinkang/utc/features/'
+    LABEL_BASE = r'/public/data0/users/hulinkang/utc/origin_data/Global_Summaries/'
+    TAGS_PATH = r'/public/data0/users/hulinkang/utc/Tags.mat'
+    model_save_base = r'/public/data0/users/hulinkang/model_HL_v3/'
+    ckpt_model_path = r'/public/data0/users/hulinkang/model_HL_v3/utc_SA/'
 else:
     # path for USTC servers
-    SCORE_PATH = r'/data/linkang/VHL_GNN/'+hp.dataset+'_score_record.json'
-    VCAT_PATH = r'/data/linkang/VHL_GNN/tvsum_video_category.json'
-    SEGINFO_PATH = r'/data/linkang/VHL_GNN/'+hp.dataset+'_segment_info.json'
-    FEATURE_DIR = r'/data/linkang/VHL_GNN/'+hp.dataset+'_feature_googlenet_2fps/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
+    LABEL_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Global_Summaries/'
+    TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
     model_save_base = r'/data/linkang/model_HL_v4/'
-    ckpt_model_path = '../model_HL_v2/'+hp.dataset+'_SA/S20376-E24-L0.010669-F0.512'
+    ckpt_model_path = r'/data/linkang/model_HL_v4/utc_SA/'
 
 logging.basicConfig(level=logging.INFO)
 
-def load_info(path):
-    with open(path,'r') as file:
-        info = json.load(file)
-    return info
+def load_Tags(Tags_path):
+    # 从Tags中加载每个视频中每个shot对应的concept标签
+    Tags = []
+    Tags_raw = scipy.io.loadmat(Tags_path)
+    Tags_tmp1 = Tags_raw['Tags'][0]
+    logging.info('Tags: ')
+    for i in range(4):
+        Tags_tmp2 = Tags_tmp1[i][0]
+        shot_labels = np.zeros((0, 48))
+        for j in range(len(Tags_tmp2)):
+            shot_label = Tags_tmp2[j][0][0].reshape((1, 48))
+            shot_labels = np.vstack((shot_labels, shot_label))
+        Tags.append(shot_labels)
+        logging.info(str(i)+' '+str(shot_labels.shape))
+    return Tags
 
-# def load_feature(score_record,video_category,feature_dir):
-#     # split dataset
-#     categories = list(video_category.keys())
-#     train_vids = []
-#     valid_vids = []
-#     test_vids = []
-#     for cate in categories:
-#         names = video_category[cate]
-#         names.sort()
-#         valid_vids.append(names.pop())
-#         test_vids.append(names.pop())
-#         train_vids += names
-#
-#     # load data
-#     vids = list(score_record.keys())
-#     data_train = {}
-#     data_valid = {}
-#     data_test = {}
-#     for vid in vids:
-#         temp = {}
-#         temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
-#         temp['scores'] = np.array(score_record[vid]['scores'])
-#         temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
-#         temp['labels'] = np.array(score_record[vid]['label_greedy'])
-#         temp['pos_index'] = np.where(temp['labels'] > 0)[0]
-#         temp['neg_index'] = np.where(temp['labels'] < 1)[0]
-#         if vid in train_vids:
-#             data_train[vid] = temp
-#         elif vid in valid_vids:
-#             data_valid[vid] = temp
-#         else:
-#             data_test[vid] = temp
-#         logging.info(vid+': '+str(temp['feature'].shape)+str(temp['scores'].shape)+str(temp['labels'].shape)+
-#                      ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
-#     logging.info('Valid Set: '+str(valid_vids))
-#     logging.info('Test Set: '+str(test_vids))
-#     return data_train, data_valid, data_test
-
-def f1_calc(pred,gts):
-    # 计算pred与所有gt的平均f1
-    f1s = []
-    for gt in gts:
-        precision = np.sum(pred * gt) / (np.sum(pred) + 1e-6)
-        recall = np.sum(pred * gt) / (np.sum(gt) + 1e-6)
-        f1s.append(2 * precision * recall / (precision + recall + 1e-6))
-    return np.array(f1s).mean()
-
-def max_f1_estimate(score_record, vids):
-    # 使用scores_avg作为预测，计算与各个summary的F1，作为对模型可能达到的最大F1的估计
-    f1_overall_greedy = []
-    segment_info = load_info(SEGINFO_PATH)
-    for vid in vids:
-        label_trues = score_record[vid]['keyshot_labels']
-        # label_trues = [frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))]
-        label_greedy = np.array(score_record[vid]['label_greedy'])
-        f1_greedy = f1_calc(label_greedy,label_trues)
-        f1_overall_greedy.append(f1_greedy)
-    return np.array(f1_overall_greedy)
-
-def load_feature_5fold(score_record,segment_info,feature_dir,**kwargs):
-    # 将数据划分为5部分，提取特征，每个部分都由各个类别各取一个视频组成
-    # # split dataset
-    # video_vategory = kwargs['video_category']
-    # categories = list(video_category.keys())
-    # subset_indexes = [[],[],[],[],[]]  # 5个列表，分别记录属于每个子集的索引
-    # for cate in categories:
-    #     names = video_category[cate]
-    #     # names.sort()
-    #     random.shuffle(names)
-    #     for i in range(len(names)):
-    #         subset_indexes[i].append(names[i])
-
-    # load data
-    vids = list(score_record.keys())
-    vids.sort()
-    subset_indexes = [[],[],[],[],[]]
-    if kwargs['dataset'] == 'tvsum':
-        subset_indexes[0] = ['kLxoNp-UchI', '0tmA_C6XwfM', 'Yi4Ij2NM7U4', 'RBCABdttQmI', 'XzYM3PfTM4w', 'VuWGsYPqAX8', 'vdmoEJ5YbrQ', 'GsAD1KT1xo8', 'Se3oxnaPsz0', 'EYqVtI9YWJA']
-        subset_indexes[1] = ['E11zDS9XGzg', 'Bhxk-O1Y7Ho', 'Hl-__g2gn_A', '91IHQYk1IQM', '98MoyGZKHXc', '_xMr-HKMfVA', 'xwqBXPGE9pQ', 'XkqCExn6_Us', 'EE-bNr36nyA', 'qqR6AEXwxoQ']
-        subset_indexes[2] = ['-esJrBWj2d8', '3eYKfiOEJNs', 'WG0MBPpPC6I', 'z_6gVvQb2d0', 'AwmHb44_ouw', 'xmEERLqJ2kU', 'akI8YFjEmUw', 'cjibtmSLxQ4', 'WxtbjNsCQ8A', 'JgHubY5Vw3Y']
-        subset_indexes[3] = ['NyBmCxDoHJU', 'xxdtq8mxegs', 'LRw_obCPUt0', '4wU_LUjG5Ic', 'J0nA4VgnoCo', 'JKpqYvAdIsw', 'sTEELN-vY30', 'PJrm840pAUI', 'uGu_10sucQo', 'iVt07TCkFM0']
-        subset_indexes[4] = ['jcoYJXDG9sw', 'i3wAGJaaktw', '37rzWOQsNIw', 'fWutDQy1nnY', 'gzDbaEs1Rlg', 'byxOvuiIJV0', 'HT5vyqe0Xaw', 'b626MiF1ew4', 'oDXZc0tZe04', 'eQu1rNs0an0']
-        # subset_indexes[0] = ['kLxoNp-UchI','E11zDS9XGzg','-esJrBWj2d8','NyBmCxDoHJU','jcoYJXDG9sw']
-        # subset_indexes[1] = ['0tmA_C6XwfM','Bhxk-O1Y7Ho','3eYKfiOEJNs','xxdtq8mxegs','i3wAGJaaktw']
-        # subset_indexes[2] = ['Yi4Ij2NM7U4','Hl-__g2gn_A','WG0MBPpPC6I','LRw_obCPUt0','37rzWOQsNIw']
-        # subset_indexes[3] = ['RBCABdttQmI','91IHQYk1IQM','z_6gVvQb2d0','4wU_LUjG5Ic','fWutDQy1nnY']
-        # subset_indexes[4] = ['XzYM3PfTM4w','98MoyGZKHXc','AwmHb44_ouw','J0nA4VgnoCo','gzDbaEs1Rlg']
-    elif kwargs['dataset'] == 'summe':
-        for i in range(5):
-            subset_indexes[i] = vids[i*5:(i+1)*5]
-
-    subsets = [{},{},{},{},{}]  # 5个字典，每个是一个数据子集
-    for vid in vids:
-        temp = {}
-        temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
-        temp['scores'] = np.array(score_record[vid]['scores'])
-        temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
-        temp['labels'] = np.array(score_record[vid]['label_greedy'])  # score_record中，label_greedy是用贪心策略求得的标签，labels是用取平均+排序得到的
-        temp['labels_avg'] = frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))  # 这里用scores_avg+KTS求出avg标签，另一种方法是使用取平均+排序得到的labels
-        temp['pos_index'] = np.where(temp['labels'] > 0)[0]
-        temp['neg_index'] = np.where(temp['labels'] < 1)[0]
-        for i in range(len(subset_indexes)):
-            index = subset_indexes[i]
-            if vid in index:
-                subsets[i][vid] = temp
-                break
-        logging.info(
-            vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels'].shape) +
-            ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
-
-    for i in range(len(subset_indexes)):
-        logging.info('Subset '+str(i)+str(subset_indexes[i]))
-        f1_subset = max_f1_estimate(score_record, subset_indexes[i])
-        # logging.info('Estimated F1: '+str(list(f1_subset)))
-        logging.info('Average Estimated F1: '+str(f1_subset.mean()))
-    return subsets
+def load_feature_4fold(feature_base, label_base, Tags):
+    data = {}
+    for vid in range(1,5):
+        data[str(vid)] = {}
+        vlength = len(Tags[vid-1])
+        # feature
+        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+        label_path = label_base + 'P0%d/oracle.txt' % vid
+        f = h5py.File(feature_path, 'r')
+        feature = f['feature'][()][:vlength]
+        data[str(vid)]['feature'] = feature
+        # label
+        with open(label_path, 'r') as f:
+            hl = []
+            for line in f.readlines():
+                hl.append(int(line.strip())-1)
+        label = np.zeros(len(feature))
+        label[hl] = 1
+        data[str(vid)]['labels'] = label
+        # other
+        data[str(vid)]['scores_avg'] = label + 1e-6  # just for padding
+        data[str(vid)]['pos_index'] = np.where(label > 0)[0]
+        data[str(vid)]['neg_index'] = np.where(label < 1)[0]
+        logging.info('Vid: '+str(vid)+' Feature: '+str(feature.shape)+' Label: '+str(label.shape))
+    return data
 
 def train_scheme_build_v3(data_train,seq_len):
-    # 根据正负样本制定的train_scheme，取每个样本的左右领域与样本共同构成一个序列，分别得到正样本序列与负样本序列
-    # 在getbatch时数据用零填充，score也用零填充，在attention计算时根据score将负无穷输入softmax，消除padding片段对有效片段的影响
-    # 正负样本序列生成后随机化，直接根据step确定当前使用哪个序列，正负各取一个计算pairwise loss
-    # train_scheme = [pos_list=(vid,seq_start,seq_end,sample_pos,sample_label),neg_list=()]
-
     pos_list = []
     neg_list = []
     for vid in data_train:
@@ -246,80 +163,6 @@ def train_scheme_build_v3(data_train,seq_len):
     random.shuffle(pos_list)
     random.shuffle(neg_list)
     return (pos_list,neg_list)
-
-def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
-    # 按照train-scheme制作batch，每次选择gpu_num*bc个序列返回，要求每个bc中一半是正样本一半是负样本，交替排列
-    # 每个序列构成一个sample，故共有gpu_num*bc个sample，每个gpu上计算bc个sample的loss
-    # 返回gpu_num*bc个label，对应每个sample中一个片段的标签
-    # 同时返回一个取样位置序列sample_pos，顺序记录每个sample中标签对应的片段在序列中的位置，模型输出后根据sample_pos计算loss
-    # 根据step顺序读取pos_list与neg_list中的序列并组合为batch_index，再抽取对应的visual，audio，score与label
-    # 产生multihead mask，(gpu_num*num_heads*bc) * seq_len的矩阵
-    pos_list,neg_list = train_scheme
-    pos_num = len(pos_list)
-    neg_num = len(neg_list)
-
-    # 生成batch_index与sample_pos
-    batch_index = []
-    sample_poses = []
-    batch_labels = []  # only for check
-    for i in range(int(gpu_num * bc / 2)):  # gpu_num*bc应当为偶数
-        pos_position = (step * int(gpu_num * bc / 2) + i) % pos_num  # 当前在pos_list中的起始位置
-        neg_position = (step * int(gpu_num * bc / 2) + i) % neg_num  # 当前在neg_list中的起始位置
-        # 读正样本
-        vid,seq_start,seq_end,sample_pos,sample_label = pos_list[pos_position]
-        batch_index.append((vid,seq_start,seq_end,sample_pos))
-        sample_poses.append(sample_pos - seq_start)
-        batch_labels.append(sample_label)
-        # 读负样本
-        vid, seq_start, seq_end, sample_pos, sample_label = neg_list[neg_position]
-        batch_index.append((vid, seq_start, seq_end, sample_pos))
-        sample_poses.append(sample_pos - seq_start)
-        batch_labels.append(sample_label)
-
-    # 根据索引读取数据，并做padding
-    features = []
-    scores_avgs = []
-    labels = []
-    for i in range(len(batch_index)):
-        vid,seq_start,seq_end,sample_pos = batch_index[i]
-        vlength = len(data[vid]['labels'])
-        seq_end = min(vlength,seq_end)  # 截断
-        padding_len = seq_len - (seq_end - seq_start)
-        feature = data[vid]['feature'][seq_start:seq_end]
-        scores_avg = data[vid]['scores_avg'][seq_start:seq_end]
-        if padding_len > 0:
-            feature_pad = np.zeros((padding_len, D_INPUT))
-            scores_avg_pad = np.zeros((padding_len,))
-            feature = np.vstack((feature,feature_pad))  # 统一在后侧padding
-            scores_avg = np.hstack((scores_avg, scores_avg_pad))
-        features.append(feature)
-        scores_avgs.append(scores_avg)
-        labels.append(data[vid]['labels'][sample_pos])
-    features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
-    scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
-    labels = np.array(labels).reshape((gpu_num * bc,))
-    sample_poses = np.array(sample_poses).reshape((gpu_num * bc,))
-
-    # multihead mask
-    h = NUM_HEADS
-    mask_ranges = RECEP_SCOPES
-    mask = np.ones((h,gpu_num*bc,seq_len))
-    for i in range(h):
-        # 对于每一个head，用一个感受范围做一组mask
-        for j in range(gpu_num * bc):
-           # start = max(0, sample_poses[j] - mask_ranges +i)
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
-            mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
-    if not MUlTIHEAD_ATTEN:
-        mask = np.zeros_like(mask)
-
-    # check
-    if np.sum(labels - np.array(batch_labels)) != 0:
-        logging.info('Label Mismatch: %d' % step)
-
-    return features, scores_avgs, labels, sample_poses, mask
 
 def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     # 可以调整正负样本比例的版本，不能使用pairwise loss
@@ -378,10 +221,9 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
@@ -453,10 +295,9 @@ def get_batch_test(data,test_scheme,step,gpu_num,bc,seq_len):
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i, j, start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
@@ -484,14 +325,13 @@ def conv3d(name, l_input, w, b):
           )
 
 def score_pred(features,scores_avg,sample_poses,multihead_mask,drop_out,training):
-
     # # self-attention
     # # feature形式为bc*seq_len个帧
     # # 对encoder来说每个gpu上输入bc*seq_len*d，即每次输入bc个序列，每个序列长seq_len，每个元素维度为d
     # # 在encoder中将输入的序列映射到合适的维度
     seq_input = tf.reshape(features, shape=(BATCH_SIZE, SEQ_LEN, -1))  # bc*seq_len*1024
     multihead_mask = tf.reshape(multihead_mask, shape=(NUM_HEADS * BATCH_SIZE, SEQ_LEN))
-    logits, attention_list = self_attention(seq_input, scores_avg, multihead_mask, SEQ_LEN, NUM_BLOCKS,
+    logits, attention_list = self_attention(seq_input, scores_avg, None, multihead_mask, BATCH_SIZE, SEQ_LEN, NUM_BLOCKS,
                                             NUM_HEADS, drop_out, training)  # bc*seq_len
 
     target = tf.one_hot(indices=sample_poses, depth=logits.get_shape().as_list()[-1], on_value=1, off_value=0)
@@ -563,75 +403,80 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-def frame2shot(vid,segment_info,scores):
-    # 输入N*vlength的帧得分，以及对应视频的分段情况，输出同样形状的keyshot_labels
-    # keyshot_labels将所有被选入summary的帧标记为1，其他标记为0
-    cps = np.array(segment_info[vid])
-    keyshot_labels = []
-    for i in range(len(scores)):
-        y = scores[i]
-        y = (y - np.min(y)) / (np.max(y) - np.min(y))
-        lists = [(y[cps[idx]:cps[idx + 1]], cps[idx]) for idx in range(len(cps) - 1)]
-        segments = [tuple([np.average(i[0]), len(i[0]), i[1]]) for i in lists]
-        value, weight, start = zip(*segments)
-        max_weight = int(0.15 * len(y))
-        chosen = knapSack(max_weight, weight, value, len(weight))
-        keyshots = np.zeros(len(y))
-        chosen = [int(j) for i, j in enumerate(chosen)]
-        for i, j in enumerate(chosen):
-            if (j == 1):
-                keyshots[start[int(i)]:start[int(i)] + weight[int(i)]] = 1
-        keyshot_labels.append(keyshots)
-    keyshot_labels = np.array(keyshot_labels).squeeze()
-    return keyshot_labels
+def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
+    # 计算两个shot序列之间的相似度，返回相似度矩阵
+    # 注意，返回的矩阵的行和列分别对应序列1和序列2中的顺序
+    def concept_IOU(shot_i, shot_j):
+        # 计算intersection-over-union
+        intersection = shot_i * shot_j
+        union = (shot_i + shot_j).astype('bool').astype('int')
+        return np.sum(intersection) / np.sum(union)
 
-def evaluation_frame(pred_scores, test_vids, segment_info, score_record):
-    # 基于帧水平的评估方式，对于一个预测和一个GT的帧得分序列，首先转换成分段的形式，然后选出keyshot，再转换回帧标签的形式
-    # 计算每一组预测和GT的F1，求平均作为这一视频的F1
+    vTags = Tags[vid-1]
+    shot_num1 = len(shot_seq1)
+    shot_num2 = len(shot_seq2)
+    sim_mat = np.zeros((shot_num1,shot_num2))
+    for i in range(shot_num1):
+        for j in range(shot_num2):
+            sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
+    return sim_mat
 
+def shot_matching(sim_mat):
+    # 根据相似度矩阵计算二分图的最大匹配后的总权重
+    shot_num1, shot_num2 = sim_mat.shape
+    G = nx.complete_bipartite_graph(shot_num1,shot_num2)
+    left, right = nx.bipartite.sets(G)  # 节点编号从left开始计数
+    left = list(left)
+    right = list(right)
+    for i in range(shot_num1):
+        for j in range(shot_num2):
+            G[left[i]][right[j]]['weight'] = sim_mat[i,j]
+    edge_set = nx.algorithms.matching.max_weight_matching(G,maxcardinality=False,weight='weight')
+
+    # 计算总权重
+    weight_sum = 0
+    for edge in list(edge_set):
+        weight_sum += G[edge[0]][edge[1]]['weight']
+    return weight_sum
+
+def evaluation(pred_scores, data_test, test_vids, Tags):
+    # 读入全部预测结果，按照视频切分，以一定的比例选出前几个shot，进行匹配并计算F1
     # 首先将模型输出裁剪为对每个视频中的帧得分预测
     preds_c = list(pred_scores[0])
     for i in range(1, len(pred_scores)):
         preds_c = preds_c + list(pred_scores[i])
     y_preds = {}
-
-    # 计算F1，每个视频都计算20个F1，求总平均值
+    # 计算F1
     pos = 0
     PRE_values = []
     REC_values = []
     F1_values = []
-    F1_greedy = []
     for vid in test_vids:
-        vlength = len(score_record[vid]['labels'])
-        y_pred = np.array(preds_c[pos:pos+vlength])
-        y_pred = np.expand_dims(y_pred,0)
+        label = data_test[vid]['labels']
+        vlength = len(label)
+        y_pred = np.array(preds_c[pos:pos + vlength])
         y_preds[vid] = y_pred
         pos += vlength
-        label_pred = frame2shot(vid, segment_info, y_preds[vid])
-        label_trues = score_record[vid]['keyshot_labels']
-        for i in range(len(label_trues)):
-            precision = np.sum(label_pred * label_trues[i]) / (np.sum(label_pred) + 1e-6)
-            recall = np.sum(label_pred * label_trues[i]) / (np.sum(label_trues[i]) + 1e-6)
-            PRE_values.append(precision)
-            REC_values.append(recall)
-            F1_values.append(2 * precision * recall / (precision + recall + 1e-6))
-
-        label_greedy = score_record[vid]['label_greedy']
-        p = np.sum(label_pred * label_greedy) / (np.sum(label_pred) + 1e-6)
-        r = np.sum(label_pred * label_greedy) / (np.sum(label_greedy) + 1e-6)
-        f = (2 * p * r) / (p + r + 1e-6)
-        F1_greedy.append(f)
-
+        y_pred_list = list(y_pred)
+        y_pred_list.sort(reverse=True)
+        threshold = y_pred_list[math.ceil(vlength * 0.02)]
+        shot_seq_pred = np.where(y_pred > threshold)[0]
+        shot_seq_label = np.where(label > 0)[0]
+        # matching
+        sim_mat = similarity_compute(Tags, int(vid), shot_seq_pred, shot_seq_label)
+        weight = shot_matching(sim_mat)
+        precision = weight / len(shot_seq_pred)
+        recall = weight / len(shot_seq_label)
+        f1 = 2 * precision * recall / (precision + recall)
+        PRE_values.append(precision)
+        REC_values.append(recall)
+        F1_values.append(f1)
     PRE_values = np.array(PRE_values)
     REC_values = np.array(REC_values)
     F1_values = np.array(F1_values)
-
-    print('Greedy: ')
-    print(np.array(F1_greedy).mean())
-
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def run_training(data_train, data_test, segment_info, score_record, test_mode, model_save_dir):
+def run_training(data_train, data_test, Tags, test_mode, model_save_dir):
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
     max_f1 = MAX_F1
@@ -751,7 +596,7 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
                                                                         dropout_holder: 0})
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1)))
-                p, r, f = evaluation_frame(pred_scores, test_vids, segment_info, score_record)
+                p, r, f = evaluation(pred_scores, data_test, test_vids, Tags)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
                 pos_list, neg_list = train_scheme
                 random.shuffle(pos_list)
@@ -782,31 +627,22 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
 
 def main(self):
     # load data
-    score_record = load_info(SCORE_PATH)
-    segment_info = load_info(SEGINFO_PATH)
-    video_category = load_info(VCAT_PATH)
-    subsets = load_feature_5fold(score_record, segment_info, FEATURE_DIR, video_category=video_category, dataset=hp.dataset)
+    Tags = load_Tags(TAGS_PATH)
+    data = load_feature_4fold(FEATURE_BASE, LABEL_BASE, Tags)
 
     # split data
     data_train = {}
     data_valid = {}
     data_test = {}
-    for i in range(K_FOLD_MODE,K_FOLD_MODE+3):
-        j = i % 5
-        data_train.update(subsets[j])
-    data_valid.update(subsets[(K_FOLD_MODE+3) % 5])
-    data_test.update(subsets[(K_FOLD_MODE+4) % 5])
-    f1_train = max_f1_estimate(score_record, list(data_train.keys()))
-    f1_valid = max_f1_estimate(score_record, list(data_valid.keys()))
-    f1_test = max_f1_estimate(score_record, list(data_test.keys()))
-    logging.info('-'*20+'K-fold: '+str(K_FOLD_MODE)+'-'*20)
-    logging.info('Train Set Average Estimated F1: ' + str(f1_train.mean()))
-    logging.info('Valid Set Average Estimated F1: ' + str(f1_valid.mean()))
-    logging.info('Test Set Average Estimated F1: ' + str(f1_test.mean()))
-    logging.info('-'*50+'\n')
+    data_train[str((K_FOLD_MODE+0) % 4 + 1)] = data[str((K_FOLD_MODE+0) % 4 + 1)]
+    data_train[str((K_FOLD_MODE+1) % 4 + 1)] = data[str((K_FOLD_MODE+1) % 4 + 1)]
+    data_valid[str((K_FOLD_MODE + 2) % 4 + 1)] = data[str((K_FOLD_MODE + 2) % 4 + 1)]
+    data_test[str((K_FOLD_MODE + 3) % 4 + 1)] = data[str((K_FOLD_MODE + 3) % 4 + 1)]
 
     # info
     logging.info('*'*20+'Settings'+'*'*20)
+    logging.info('K-fold: ' + str(K_FOLD_MODE))
+    logging.info('Valid: %d  Test: %d' % ((K_FOLD_MODE + 2) % 4 + 1, (K_FOLD_MODE + 3) % 4 + 1))
     logging.info('Model Base: '+model_save_base+hp.msd)
     logging.info('Training Phases: ' + str(PHASES_STEPS))
     logging.info('Phase LR: '+str(PHASES_LR))
@@ -825,9 +661,11 @@ def main(self):
         model_save_dir = model_save_base + hp.msd + '_%d/' % i
         logging.info('*'*10+str(i)+': '+model_save_dir+'*'*10)
         logging.info('*'*60)
-        run_training(data_train, data_test, segment_info, score_record, 0, model_save_dir)  # for training
+        run_training(data_train, data_valid, Tags, 0, model_save_dir)  # for training
         logging.info('*' * 60)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     tf.app.run()
+
+
 

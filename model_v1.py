@@ -1,4 +1,5 @@
-# 新实验，实验1
+# 1. 使用multiple annotation上的F1均值作为loss
+
 import os
 import time
 import numpy as np
@@ -25,7 +26,7 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=2e-6, type=float)
+    parser.add_argument('--lr_noam', default=4e-6, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
     parser.add_argument('--maxstep', default=45000, type=int)
     parser.add_argument('--pos_ratio',default=0.8, type=float)
@@ -71,10 +72,11 @@ SEQ_LEN = hp.seq_len
 NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 MUlTIHEAD_ATTEN = hp.multimask
-RECEP_SCOPES = 6#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
+RECEP_SCOPES = 2#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 1024
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
+ANNO_NUM = 20  # 每个视频中标注的数量上限
 
 load_ckpt_model = False
 
@@ -101,44 +103,6 @@ def load_info(path):
     with open(path,'r') as file:
         info = json.load(file)
     return info
-
-# def load_feature(score_record,video_category,feature_dir):
-#     # split dataset
-#     categories = list(video_category.keys())
-#     train_vids = []
-#     valid_vids = []
-#     test_vids = []
-#     for cate in categories:
-#         names = video_category[cate]
-#         names.sort()
-#         valid_vids.append(names.pop())
-#         test_vids.append(names.pop())
-#         train_vids += names
-#
-#     # load data
-#     vids = list(score_record.keys())
-#     data_train = {}
-#     data_valid = {}
-#     data_test = {}
-#     for vid in vids:
-#         temp = {}
-#         temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
-#         temp['scores'] = np.array(score_record[vid]['scores'])
-#         temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
-#         temp['labels'] = np.array(score_record[vid]['label_greedy'])
-#         temp['pos_index'] = np.where(temp['labels'] > 0)[0]
-#         temp['neg_index'] = np.where(temp['labels'] < 1)[0]
-#         if vid in train_vids:
-#             data_train[vid] = temp
-#         elif vid in valid_vids:
-#             data_valid[vid] = temp
-#         else:
-#             data_test[vid] = temp
-#         logging.info(vid+': '+str(temp['feature'].shape)+str(temp['scores'].shape)+str(temp['labels'].shape)+
-#                      ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
-#     logging.info('Valid Set: '+str(valid_vids))
-#     logging.info('Test Set: '+str(test_vids))
-#     return data_train, data_valid, data_test
 
 def f1_calc(pred,gts):
     # 计算pred与所有gt的平均f1
@@ -197,7 +161,7 @@ def load_feature_5fold(score_record,segment_info,feature_dir,**kwargs):
     for vid in vids:
         temp = {}
         temp['feature'] = np.load(feature_dir + vid +'_googlenet_2fps.npy')
-        temp['scores'] = np.array(score_record[vid]['scores'])
+        temp['keyshot_labels'] = np.array(score_record[vid]['keyshot_labels'])
         temp['scores_avg'] = np.array(score_record[vid]['scores_avg'])
         temp['labels'] = np.array(score_record[vid]['label_greedy'])  # score_record中，label_greedy是用贪心策略求得的标签，labels是用取平均+排序得到的
         temp['labels_avg'] = frame2shot(vid, segment_info, np.array(score_record[vid]['scores_avg']).reshape(1,-1))  # 这里用scores_avg+KTS求出avg标签，另一种方法是使用取平均+排序得到的labels
@@ -209,7 +173,7 @@ def load_feature_5fold(score_record,segment_info,feature_dir,**kwargs):
                 subsets[i][vid] = temp
                 break
         logging.info(
-            vid + ': ' + str(temp['feature'].shape) + str(temp['scores'].shape) + str(temp['labels'].shape) +
+            vid + ': ' + str(temp['feature'].shape) + str(temp['keyshot_labels'].shape) + str(temp['labels'].shape) +
             ' pos_num: %d neg_num: %d' % (len(temp['pos_index']), len(temp['neg_index'])))
 
     for i in range(len(subset_indexes)):
@@ -254,6 +218,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
     # 同时返回一个取样位置序列sample_pos，顺序记录每个sample中标签对应的片段在序列中的位置，模型输出后根据sample_pos计算loss
     # 根据step顺序读取pos_list与neg_list中的序列并组合为batch_index，再抽取对应的visual，audio，score与label
     # 产生multihead mask，(gpu_num*num_heads*bc) * seq_len的矩阵
+    # 抽取序列对应的完整的multiple annotation作为multiple_label
     pos_list,neg_list = train_scheme
     pos_num = len(pos_list)
     neg_num = len(neg_list)
@@ -261,6 +226,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
     # 生成batch_index与sample_pos
     batch_index = []
     sample_poses = []
+    sample_poses_abs = []  # 取样点在视频中的绝对位置
     batch_labels = []  # only for check
     for i in range(int(gpu_num * bc / 2)):  # gpu_num*bc应当为偶数
         pos_position = (step * int(gpu_num * bc / 2) + i) % pos_num  # 当前在pos_list中的起始位置
@@ -268,17 +234,20 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
         # 读正样本
         vid,seq_start,seq_end,sample_pos,sample_label = pos_list[pos_position]
         batch_index.append((vid,seq_start,seq_end,sample_pos))
+        sample_poses_abs.append(sample_pos)
         sample_poses.append(sample_pos - seq_start)
         batch_labels.append(sample_label)
         # 读负样本
         vid, seq_start, seq_end, sample_pos, sample_label = neg_list[neg_position]
         batch_index.append((vid, seq_start, seq_end, sample_pos))
+        sample_poses_abs.append(sample_pos)
         sample_poses.append(sample_pos - seq_start)
         batch_labels.append(sample_label)
 
     # 根据索引读取数据，并做padding
     features = []
     scores_avgs = []
+    multi_lables = []  # keyshot_labels, for training
     labels = []
     for i in range(len(batch_index)):
         vid,seq_start,seq_end,sample_pos = batch_index[i]
@@ -287,17 +256,23 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
         scores_avg = data[vid]['scores_avg'][seq_start:seq_end]
+        multi_label = data[vid]['keyshot_labels'][:,seq_start:seq_end]
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_INPUT))
             scores_avg_pad = np.zeros((padding_len,))
+            multi_label_pad = np.zeros_like(multi_label)[:padding_len]
             feature = np.vstack((feature,feature_pad))  # 统一在后侧padding
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
+            multi_label = np.hstack((multi_label, multi_label_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
+        multi_lables.append(multi_label)
         labels.append(data[vid]['labels'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
+    multi_lables = np.array(multi_lables).reshape((gpu_num*bc,-1,seq_len))  # bc*20*seqlen
     labels = np.array(labels).reshape((gpu_num * bc,))
+    sample_poses_abs = np.array(sample_poses_abs).reshape((gpu_num * bc,))
     sample_poses = np.array(sample_poses).reshape((gpu_num * bc,))
 
     # multihead mask
@@ -308,10 +283,9 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
            # start = max(0, sample_poses[j] - mask_ranges +i)
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges -i)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
@@ -319,7 +293,7 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
     if np.sum(labels - np.array(batch_labels)) != 0:
         logging.info('Label Mismatch: %d' % step)
 
-    return features, scores_avgs, labels, sample_poses, mask
+    return features, scores_avgs, multi_lables, labels, sample_poses_abs, sample_poses, mask
 
 def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     # 可以调整正负样本比例的版本，不能使用pairwise loss
@@ -339,36 +313,45 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
         batch_index_raw.append(neg_list[neg_position])
     random.shuffle(batch_index_raw)
     batch_index = []
+    sample_poses_abs = []  # 取样点在视频中的绝对位置
     sample_poses = []
     batch_labels = []  # only for check
     for i in range(len(batch_index_raw)):
         vid, seq_start, seq_end, sample_pos, sample_label = batch_index_raw[i]
         batch_index.append((vid, seq_start, seq_end, sample_pos))
+        sample_poses_abs.append(sample_pos)
         sample_poses.append(sample_pos - seq_start)
         batch_labels.append(sample_label)
 
     # 根据索引读取数据，并做padding
     features = []
     scores_avgs = []
+    multi_lables = []  # keyshot_labels, for training
     labels = []
     for i in range(len(batch_index)):
-        vid,seq_start,seq_end,sample_pos = batch_index[i]
+        vid, seq_start, seq_end, sample_pos = batch_index[i]
         vlength = len(data[vid]['labels'])
-        seq_end = min(vlength,seq_end)  # 截断
+        seq_end = min(vlength, seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
         scores_avg = data[vid]['scores_avg'][seq_start:seq_end]
+        multi_label = data[vid]['keyshot_labels'][:, seq_start:seq_end]
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_INPUT))
             scores_avg_pad = np.zeros((padding_len,))
-            feature = np.vstack((feature,feature_pad))  # 统一在后侧padding
+            multi_label_pad = np.zeros_like(multi_label)[:,:padding_len]
+            feature = np.vstack((feature, feature_pad))  # 统一在后侧padding
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
+            multi_label = np.hstack((multi_label, multi_label_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
+        multi_lables.append(multi_label)
         labels.append(data[vid]['labels'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
+    multi_lables = np.array(multi_lables).reshape((gpu_num * bc, -1, seq_len))  # bc*20*seqlen
     labels = np.array(labels).reshape((gpu_num * bc,))
+    sample_poses_abs = np.array(sample_poses_abs).reshape((gpu_num * bc,))
     sample_poses = np.array(sample_poses).reshape((gpu_num * bc,))
 
     # multihead mask
@@ -378,17 +361,16 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
     # check
     if np.sum(labels - np.array(batch_labels)) != 0:
         logging.info('Label Mismatch: %d' % step)
-    return features, scores_avgs, labels, sample_poses, mask
+    return features, scores_avgs, multi_lables, labels, sample_poses_abs, sample_poses, mask
 
 def test_scheme_build(data_test,seq_len):
     # 与train_schem_build一致，但是不区分正负样本，也不做随机化
@@ -412,6 +394,7 @@ def get_batch_test(data,test_scheme,step,gpu_num,bc,seq_len):
 
     # 生成batch_index与sample_pos
     batch_index = []
+    sample_poses_abs = []
     sample_poses = []  # 取样点在序列中的相对位置
     batch_labels = []  # only for check
     for i in range(gpu_num * bc):  # 每次预测gpu_num*bc个片段
@@ -419,12 +402,14 @@ def get_batch_test(data,test_scheme,step,gpu_num,bc,seq_len):
         # 读取样本
         vid,seq_start,seq_end,sample_pos,sample_label = seq_list[position]
         batch_index.append((vid,seq_start,seq_end,sample_pos))
+        sample_poses_abs.append(sample_pos)
         sample_poses.append(sample_pos - seq_start)
         batch_labels.append(sample_label)
 
     # 根据索引读取数据，并做padding
     features = []
     scores_avgs = []
+    multi_lables = []  # keyshot_labels, for training
     labels = []
     for i in range(len(batch_index)):
         vid, seq_start, seq_end, sample_pos = batch_index[i]
@@ -433,17 +418,23 @@ def get_batch_test(data,test_scheme,step,gpu_num,bc,seq_len):
         padding_len = seq_len - (seq_end - seq_start)
         feature = data[vid]['feature'][seq_start:seq_end]
         scores_avg = data[vid]['scores_avg'][seq_start:seq_end]
+        multi_label = data[vid]['keyshot_labels'][:, seq_start:seq_end]
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_INPUT))
             scores_avg_pad = np.zeros((padding_len,))
+            multi_label_pad = np.zeros_like(multi_label)[:,:padding_len]
             feature = np.vstack((feature, feature_pad))  # 统一在后侧padding
             scores_avg = np.hstack((scores_avg, scores_avg_pad))
+            multi_label = np.hstack((multi_label, multi_label_pad))
         features.append(feature)
         scores_avgs.append(scores_avg)
+        multi_lables.append(multi_label)
         labels.append(data[vid]['labels'][sample_pos])
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
+    multi_lables = np.array(multi_lables).reshape((gpu_num * bc, -1, seq_len))  # bc*20*seqlen
     labels = np.array(labels).reshape((gpu_num * bc,))
+    sample_poses_abs = np.array(sample_poses_abs).reshape((gpu_num * bc,))
     sample_poses = np.array(sample_poses).reshape((gpu_num * bc,))
 
     # multihead mask
@@ -453,17 +444,16 @@ def get_batch_test(data,test_scheme,step,gpu_num,bc,seq_len):
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i, j, start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
     # check
     if np.sum(labels - np.array(batch_labels)) != 0:
         logging.info('Label Mismatch: %d' % step)
-    return features, scores_avgs, labels, sample_poses, mask
+    return features, scores_avgs, multi_lables, labels, sample_poses_abs, sample_poses, mask
 
 def _variable_on_cpu(name, shape, initializer):
     with tf.device('/cpu:0'):
@@ -483,7 +473,7 @@ def conv3d(name, l_input, w, b):
           b
           )
 
-def score_pred(features,scores_avg,sample_poses,multihead_mask,drop_out,training):
+def score_pred(features,scores_avg,sample_poses_abs,sample_poses,multihead_mask,drop_out,training):
 
     # # self-attention
     # # feature形式为bc*seq_len个帧
@@ -491,17 +481,18 @@ def score_pred(features,scores_avg,sample_poses,multihead_mask,drop_out,training
     # # 在encoder中将输入的序列映射到合适的维度
     seq_input = tf.reshape(features, shape=(BATCH_SIZE, SEQ_LEN, -1))  # bc*seq_len*1024
     multihead_mask = tf.reshape(multihead_mask, shape=(NUM_HEADS * BATCH_SIZE, SEQ_LEN))
-    logits, attention_list = self_attention(seq_input, scores_avg, multihead_mask, SEQ_LEN, NUM_BLOCKS,
+    logits, attention_list = self_attention(seq_input, scores_avg, sample_poses_abs, multihead_mask, BATCH_SIZE, SEQ_LEN, NUM_BLOCKS,
                                             NUM_HEADS, drop_out, training)  # bc*seq_len
+    logits_seq = tf.clip_by_value(tf.sigmoid(logits), 1e-6, 0.999999)  # (bc,seq_len)
 
     target = tf.one_hot(indices=sample_poses, depth=logits.get_shape().as_list()[-1], on_value=1, off_value=0)
     target = tf.cast(target, dtype=tf.float32)
     logits = tf.reduce_sum(logits * target, axis=1)  # 只保留取样位置的值
     logits = tf.reshape(logits, [-1, 1])
 
-    logits = tf.clip_by_value(tf.reshape(tf.sigmoid(logits), [-1, 1]), 1e-6, 0.999999)  # (bc*seq_len,1)
+    logits = tf.clip_by_value(tf.reshape(tf.sigmoid(logits), [-1, 1]), 1e-6, 0.999999)  # (bc,1)
 
-    return logits, attention_list
+    return logits, logits_seq, attention_list
 
 def _loss(sp,sn,delta):
     zeros = tf.constant(0,tf.float32,shape=[sp.get_shape().as_list()[0],1])
@@ -533,11 +524,72 @@ def tower_loss_huber(name_scope,preds,labels):
 
     return tf.reduce_mean(total_loss)
 
-def tower_loss(name_scope,logits,labels):
-    y = tf.reshape(labels,[-1,1])
-    ce = -y * (tf.log(logits)) - (1 - y) * tf.log(1 - logits)
+def tower_loss1(name_scope,logits,multi_labels):
+    # y = tf.reshape(labels,[-1,1])
+    #     # ce = -y * (tf.log(logits)) - (1 - y) * tf.log(1 - logits)
+    #     # loss = tf.reduce_mean(ce)
+    logits = tf.reshape(tf.tile(tf.expand_dims(logits, axis=1), [1, ANNO_NUM, 1]), (-1, SEQ_LEN))  # (bc*20,seqlen)
+    multi_labels = tf.reshape(multi_labels, (-1, SEQ_LEN))
+    ce = -multi_labels * tf.log(logits) - (1 - multi_labels) * tf.log(1 - logits)
     loss = tf.reduce_mean(ce)
     return loss
+
+# def loss_F1(name_scope,logits,multi_labels):
+#     # 使用logits直接与keyshot_labels计算F1均值作为loss，使F1最大化
+#     # 复制logits，计算标记为1的数目
+#     logits = tf.reshape(tf.tile(tf.expand_dims(logits,axis=1),[1,ANNO_NUM,1]),(-1,SEQ_LEN))  # (bc*20,seqlen)
+#     multi_labels = tf.reshape(multi_labels,(-1,SEQ_LEN))
+#     hl_nums = tf.cast(tf.reduce_sum(multi_labels,axis=1),dtype=tf.int32)   # (bc*20,)，每个标注中1的数目
+#     # logits转化为二元预测
+#     pred = tf.square(
+#         tf.reshape(-tf.log(logits) * multi_labels - (1 - multi_labels) * (tf.log(1-logits)),(-1,ANNO_NUM, SEQ_LEN)) )
+#     loss = tf.reduce_mean(tf.sqrt(tf.reduce_mean(pred, 1)))# / ANNO_NUM
+#     # preds = []
+#     # tops = tf.math.top_k(logits,SEQ_LEN).values  # 排序后的结果，（bc*20，seqlen）
+#     # for i in range(BATCH_SIZE * ANNO_NUM):
+#     #     threshold_ind = hl_nums[i]
+#     #     threshold = tf.reshape(tf.gather(tops[i],threshold_ind),(1,))
+#     #     threshold = tf.tile(threshold, [SEQ_LEN])
+#     #     pred = tf.cast(tf.greater(logits[i],threshold),dtype=tf.float32)
+#     #     preds.append(tf.expand_dims(pred,axis=0))
+#     # # 计算F1
+#     # preds = tf.concat(preds, axis=0)
+#     # seq_sum = tf.reduce_sum(preds * multi_labels, axis=1)
+#     # precisions = seq_sum / (tf.reduce_sum(preds, axis=1) + 1e-6)
+#     # recalls = seq_sum / (tf.reduce_sum(multi_labels, axis=1) + 1e-6)
+#     # f1s = 2 * precisions * recalls / (precisions + recalls + 1e-6)
+#     # loss = 1 - tf.reduce_mean(f1s)
+#     return loss
+
+def loss_F1(name_scope,logits, logits_seq, labels, multi_labels):
+    # 使用logits直接与keyshot_labels计算F1均值作为loss，使F1最大化
+    # 复制logits，计算标记为1的数目
+    y = tf.reshape(labels, [-1, 1])
+    ce = -y * (tf.log(logits)) - (1 - y) * tf.log(1 - logits)
+
+    logits_seq = tf.reshape(tf.tile(tf.expand_dims(logits_seq,axis=1),[1,ANNO_NUM,1]),(-1,SEQ_LEN))  # (bc*20,seqlen)
+    multi_labels = tf.reshape(multi_labels,(-1,SEQ_LEN))
+    hl_nums = tf.cast(tf.reduce_sum(multi_labels,axis=1),dtype=tf.int32)   # (bc*20,)，每个标注中1的数目
+    # logits_seq转化为二元预测
+    preds = []
+    tops = tf.math.top_k(logits_seq,SEQ_LEN).values  # 排序后的结果，（bc*20，seqlen）
+    for i in range(BATCH_SIZE * ANNO_NUM):
+        threshold_ind = hl_nums[i]
+        threshold = tf.reshape(tf.gather(tops[i],threshold_ind),(1,))
+        threshold = tf.tile(threshold, [SEQ_LEN])
+        pred = tf.cast(tf.greater(logits_seq[i],threshold),dtype=tf.float32)
+        preds.append(tf.expand_dims(pred,axis=0))
+    # # 计算F1
+    preds = tf.concat(preds, axis=0)
+    seq_sum = tf.reduce_sum(preds * multi_labels, axis=1)
+    precisions = seq_sum / (tf.reduce_sum(preds, axis=1) + 1e-6)
+    recalls = seq_sum / (tf.reduce_sum(multi_labels, axis=1) + 1e-6)
+    f1s = tf.reduce_mean(tf.reshape(2 * precisions * recalls / (precisions + recalls + 1e-6), [-1, ANNO_NUM]), 1)
+    weight = tf.reshape(1 - f1s, [-1, 1])#tf.reduce_mean(f1s)
+
+    loss = tf.reduce_mean(ce )#* (weight))# * weight
+
+    return loss, weight
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -641,7 +693,9 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
         # placeholders
         features_holder = tf.placeholder(tf.float32, shape=(BATCH_SIZE * GPU_NUM, SEQ_LEN, D_INPUT))
         scores_holder = tf.placeholder(tf.float32, shape=(BATCH_SIZE * GPU_NUM, SEQ_LEN))
+        multi_labels_holder = tf.placeholder(tf.float32, shape=(BATCH_SIZE * GPU_NUM, 20, SEQ_LEN))  # 为tvsum暂定20，在summe上需要额外做padding
         labels_holder = tf.placeholder(tf.float32,shape=(BATCH_SIZE * GPU_NUM,))
+        sample_poses_abs_holder = tf.placeholder(tf.int32,shape=(BATCH_SIZE * GPU_NUM,))
         sample_poses_holder = tf.placeholder(tf.int32,shape=(BATCH_SIZE * GPU_NUM,))
         mask_holder = tf.placeholder(tf.float32,shape=(NUM_HEADS, BATCH_SIZE * GPU_NUM, SEQ_LEN))
         dropout_holder = tf.placeholder(tf.float32,shape=())
@@ -656,23 +710,27 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
         tower_grads_train = []
         logits_list = []
         loss_list = []
+        f1_weight_list = []
         attention_list = []
         for gpu_index in range(GPU_NUM):
             with tf.device('/gpu:%d' % gpu_index):
                 features = features_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
+                multi_labels = multi_labels_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
                 labels = labels_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE,]
                 scores_avg = scores_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
+                sample_poses_abs = sample_poses_abs_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, ]
                 sample_poses = sample_poses_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE,]
                 multihead_mask = mask_holder[:, gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]  # 从bc维切割
 
                 # predict scores
-                logits, atlist_one = score_pred(features, scores_avg, sample_poses, multihead_mask, dropout_holder, training_holder)
+                logits, logits_seq, atlist_one = score_pred(features, scores_avg, sample_poses_abs, sample_poses, multihead_mask, dropout_holder, training_holder)
                 logits_list.append(logits)
                 attention_list += atlist_one  # 逐个拼接各个卡上的attention_list
                 # calculate loss & gradients
                 loss_name_scope = ('gpud_%d_loss' % gpu_index)
                 # loss = tower_loss_huber(loss_name_scope, logits, labels)
-                loss = tower_loss(loss_name_scope,logits,labels)
+                # loss = tower_loss(loss_name_scope,logits_seq, multi_labels)
+                loss, f1_weight = loss_F1(loss_name_scope, logits, logits_seq, labels, multi_labels)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -711,13 +769,15 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
         ob_loss = []
         timepoint = time.time()
         for step in range(MAXSTEPS):
-            features_b, scores_avg_b, labels_b, sample_poses_b, mask_b = get_batch_train_v2(data_train, train_scheme,
+            features_b, scores_avg_b, multi_labels_b, labels_b, sample_poses_abs_b, sample_poses_b, mask_b = get_batch_train_v2(data_train, train_scheme,
                                                                                  step,GPU_NUM,BATCH_SIZE,SEQ_LEN)
-            observe = sess.run([train_op] + loss_list + logits_list + attention_list + [global_step, lr],
+            observe = sess.run([train_op] + loss_list + f1_weight_list + logits_list + attention_list + [global_step, lr],
                                feed_dict={features_holder: features_b,
                                           scores_holder: scores_avg_b,
+                                          multi_labels_holder: multi_labels_b,
                                           labels_holder: labels_b,
                                           sample_poses_holder: sample_poses_b,
+                                          sample_poses_abs_holder:sample_poses_abs_b,
                                           mask_holder: mask_b,
                                           dropout_holder: DROP_OUT,
                                           training_holder: True})
@@ -741,11 +801,12 @@ def run_training(data_train, data_test, segment_info, score_record, test_mode, m
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
-                    features_b, scores_avg_b, labels_b, sample_poses_b, mask_b = get_batch_test(data_test, test_scheme,
+                    features_b, scores_avg_b, multi_labels_b, labels_b, sample_poses_abs_b, sample_poses_b, mask_b = get_batch_test(data_test, test_scheme,
                                                                                        test_step, GPU_NUM, BATCH_SIZE, SEQ_LEN)
                     logits_temp_list = sess.run(logits_list, feed_dict={features_holder: features_b,
                                                                         scores_holder: scores_avg_b,
                                                                         sample_poses_holder: sample_poses_b,
+                                                                        sample_poses_abs_holder: sample_poses_abs_b,
                                                                         mask_holder: mask_b,
                                                                         training_holder: False,
                                                                         dropout_holder: 0})

@@ -3,6 +3,7 @@ import numpy as np
 
 D_MODEL = 512
 D_FF = 2048
+MAX_VLENGTH = 1000  # 视频中帧数不会超过这个值
 
 def positional_encoding(inputs, seq_len, scope='positional_encoding'):
     E = D_MODEL
@@ -13,7 +14,7 @@ def positional_encoding(inputs, seq_len, scope='positional_encoding'):
 
         # First part of the PE function: sin and cos argument
         position_enc = np.array([
-            [pos / np.power(10000, (i - i % 2) / E) for i in range(E)]
+            [(pos-int(seq_len / 2)) / np.power(10000, (i - i % 2) / E) for i in range(E)]
             for pos in range(seq_len)])
 
         # Second part, apply the cosine to even columns and sin to odds.
@@ -28,6 +29,36 @@ def positional_encoding(inputs, seq_len, scope='positional_encoding'):
         # if masking:
         #     outputs = tf.where(tf.equal(inputs, 0), inputs, outputs)
         return tf.to_float(outputs)
+
+def positional_encoding_abs(sample_poses_abs, bc, seq_len, scope='positional_encoding'):
+    # 使用帧在视频中的绝对位置编码
+    E = D_MODEL
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        # position indices
+        position_ind = []
+        for i in range(bc):
+            seq_start = tf.maximum(0, sample_poses_abs[i] - int(seq_len/2))
+            frame_poses = tf.range(seq_start,seq_start+seq_len)  # 末尾可能会超出帧索引范围
+            position_ind.append(tf.expand_dims(frame_poses,0))
+        position_ind = tf.concat(position_ind,axis=0)  # (N,T)
+
+        # First part of the PE function: sin and cos argument
+        position_enc = np.array([
+            [pos / np.power(10000, (i - i % 2) / E) for i in range(E)]
+            for pos in range(MAX_VLENGTH)])
+
+        # Second part, apply the cosine to even columns and sin to odds.
+        position_enc[:, 0::2] = np.sin(position_enc[:, 0::2])  # dim 2i
+        position_enc[:, 1::2] = np.cos(position_enc[:, 1::2])  # dim 2i+1
+        position_enc = tf.convert_to_tensor(position_enc, tf.float32)  # (maxlen, E)
+
+        # lookup
+        outputs = tf.nn.embedding_lookup(position_enc, position_ind)
+
+        # masks
+        # if masking:
+        #     outputs = tf.where(tf.equal(inputs, 0), inputs, outputs)
+        return tf.to_float(outputs), position_ind
 
 def ln(inputs, epsilon=1e-8, scope="ln"):
     '''Applies layer normalization. See https://arxiv.org/abs/1607.06450.
@@ -87,12 +118,12 @@ def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
         attention = outputs
 
         # dropout
-        outputs = tf.layers.dropout(outputs, rate=0.1, training=training)
+        outputs = tf.layers.dropout(outputs, rate=0.4, training=training)
 
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
 
-    return outputs, attention
+    return outputs, km
 
 def mask(inputs, key_masks=None, multihead_mask=None, type=None):
     """Masks paddings on keys or queries to inputs
@@ -167,6 +198,7 @@ def multihead_attention(queries, keys, values, key_masks, multihead_mask,
             ln(outputs), dropout_rate, training=training)
         # Residual connection
         outputs += queries
+
     return outputs, attention
 
 def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
@@ -189,16 +221,24 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
         outputs = tf.layers.dropout(ln(outputs), dropout_rate)
         # Residual connection
         outputs += inputs
+       # outputs_m = tf.reduce_mean(outputs, 2)
+       #  mean, var = tf.nn.moments(outputs, 2)
+       #  mean = tf.reshape(mean, [10, 11, 1])
+       #  var = tf.reshape(var, [10, 11, 1])
+       #  outputs = tf.concat(((outputs - mean) / var, mean, var), 2)
+       #  outputs = tf.layers.dense(outputs, num_units[1])
     return outputs
 
-def self_attention(seq_input, score, multihead_mask, seq_len, num_blocks, num_heads, drop_out, training=True):
+def self_attention(seq_input, score, sample_poses_abs, multihead_mask, bc, seq_len, num_blocks, num_heads, drop_out, training=True):
     # input: seq_input(bc*seq_len*d) score(bc*seq_len)
     # return: logits(bc,seq_len)
     with tf.variable_scope('self-attetion', reuse=tf.AUTO_REUSE):
         src_masks = tf.math.equal(score, 0)  # socre=0判断是padding的部分
         enc = tf.layers.dense(seq_input, D_MODEL)
-        # enc *= D_MODEL ** 0.5  # scale
-        enc += positional_encoding(enc,seq_len)
+       # enc *= D_MODEL ** 0.5  # scale
+        enc += positional_encoding(seq_input, seq_len)
+        # enc_pos, pos_ind = positional_encoding_abs(sample_poses_abs,bc,seq_len)
+       #  enc = enc + enc_pos
 
         enc = tf.layers.dropout(enc, drop_out, training=training)
 
@@ -206,17 +246,17 @@ def self_attention(seq_input, score, multihead_mask, seq_len, num_blocks, num_he
         attention_list = [] 
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
-                # # self-attention
-                # enc, attention = multihead_attention(queries=enc,
-                #                           keys=enc,
-                #                           values=enc,
-                #                           key_masks=src_masks,
-                #                           multihead_mask=multihead_mask,
-                #                           num_heads=num_heads,
-                #                           dropout_rate=drop_out,
-                #                           training=training,
-                #                           causality=False)
-                # attention_list.append(attention)
+                # self-attention
+                enc, attention = multihead_attention(queries=enc,
+                                          keys=enc,
+                                          values=enc,
+                                          key_masks=src_masks,
+                                          multihead_mask=multihead_mask,
+                                          num_heads=num_heads,
+                                          dropout_rate=drop_out,
+                                          training=training,
+                                          causality=False)
+                attention_list.append(attention)
                 # feed forward
                 enc = ff(enc, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
 
