@@ -37,6 +37,7 @@ class Path:
     parser.add_argument('--kfold',default=3,type=int)
     parser.add_argument('--repeat',default=1,type=int)
     parser.add_argument('--dataset',default='utc',type=str)
+    parser.add_argument('--observe', default=0, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -53,6 +54,7 @@ else:
 # global paras
 REPEAT_TIMES = hp.repeat  # 重复训练和测试的次数
 K_FOLD_MODE = hp.kfold  # 1-4，使用不同的集合划分
+OBSERVE = hp.observe
 
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
@@ -80,7 +82,7 @@ RECEP_SCOPES = 2#list(range(64))  # 用于multihead mask 从取样位置开始�
 D_INPUT = 2048
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
-load_ckpt_model = False
+load_ckpt_model = True
 
 if hp.server == 0:
     # path for USTC server
@@ -476,11 +478,37 @@ def evaluation(pred_scores, data_test, test_vids, Tags):
     F1_values = np.array(F1_values)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def run_training(data_train, data_test, Tags, test_mode, model_save_dir):
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    max_f1 = MAX_F1
+def model_search(model_save_dir, observe):
+    def takestep(name):
+        return int(name.split('-')[0].split('S')[-1])
+    # 找到要验证的模型名称
+    model_to_restore = []
+    for root,dirs,files in os.walk(model_save_dir):
+        for file in files:
+            if file.endswith('.meta'):
+                model_name = file.split('.meta')[0]
+                model_to_restore.append(os.path.join(root, model_name))
+    model_to_restore = list(set(model_to_restore))
+    model_to_restore.sort(key=takestep)
 
+    if observe == 0:
+        # 只取最高F1的模型
+        model_kfold = []
+        f1s = []
+        for name in model_to_restore:
+            f1 = name.split('-')[-1]
+            if f1.startswith('F'):
+                f1s.append(float(f1.split('F')[-1]))
+        f1_max = np.array(f1s).max()
+        for name in model_to_restore:
+            f1 = name.split('-')[-1]
+            if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
+                model_kfold.append(name)
+        model_to_restore = model_kfold
+
+    return model_to_restore
+
+def run_training(data_train, data_test, Tags, model_path, test_mode):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -539,8 +567,8 @@ def run_training(data_train, data_test, Tags, test_mode, model_save_dir):
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if load_ckpt_model:
-            logging.info(' Ckpt Model Restoring: '+ckpt_model_path)
-            saver_overall.restore(sess, ckpt_model_path)
+            logging.info(' Ckpt Model Restoring: '+model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -598,32 +626,9 @@ def run_training(data_train, data_test, Tags, test_mode, model_save_dir):
                         pred_scores.append(preds.reshape((-1)))
                 p, r, f = evaluation(pred_scores, data_test, test_vids, Tags)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                pos_list, neg_list = train_scheme
-                random.shuffle(pos_list)
-                random.shuffle(neg_list)
-                train_scheme = (pos_list, neg_list)
-
                 if test_mode == 1:
-                    return
-                # save model
-                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
-                    if f > max_f1:
-                        max_f1 = f
-                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step,epoch,np.mean(loss_array),f)
-                    saver_overall.save(sess, model_path)
-                    logging.info('Model Saved: '+model_path+'\n')
-
-            if step % 2000 == 0 and step > 0:
-                model_path = model_save_dir + 'S%d-E%d' % (step+PRESTEPS, epoch)
-                # saver_overall.save(sess, model_path)
-                logging.info('Model Saved: '+str(step + PRESTEPS))
-
-            # saving final model
-        model_path = model_save_dir + 'S%d' % (MAXSTEPS + PRESTEPS)
-        # saver_overall.save(sess, model_path)
-        logging.info('Model Saved: '+str(MAXSTEPS + PRESTEPS))
-
-    return
+                    return f
+    return 0
 
 def main(self):
     # load data
@@ -656,13 +661,15 @@ def main(self):
     logging.info('Sequence Length: '+str(SEQ_LEN))
     logging.info('*' * 50+'\n')
 
-    # repeat training for test
+    model_scores = {}
     for i in range(REPEAT_TIMES):
         model_save_dir = model_save_base + hp.msd + '_%d/' % i
-        logging.info('*'*10+str(i)+': '+model_save_dir+'*'*10)
-        logging.info('*'*60)
-        run_training(data_train, data_valid, Tags, 0, model_save_dir)  # for training
-        logging.info('*' * 60)
+        models_to_restore = model_search(model_save_dir, observe=OBSERVE)
+        for i in range(len(models_to_restore)):
+            logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+            ckpt_model_path = models_to_restore[i]
+            f1 = run_training(data_train, data_test, Tags, ckpt_model_path, 1)  # for training
+            model_scores[ckpt_model_path] = f1
 
 if __name__ == '__main__':
     tf.app.run()
