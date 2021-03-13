@@ -671,6 +671,12 @@ def main(self):
             f1 = run_training(data_train, data_test, Tags, ckpt_model_path, 1)  # for training
             model_scores[ckpt_model_path] = f1
 
+    f1_list = []
+    for name in model_scores.keys():
+        f1_list.append(model_scores[name])
+    logging.info(str(f1_list))
+    logging.info('Result: ' + str(np.array(f1_list).mean()))
+
 if __name__ == '__main__':
     tf.app.run()
 
