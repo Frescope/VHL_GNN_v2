@@ -91,8 +91,8 @@ if hp.server == 0:
     QUERY_SUM_BASE = r'/public/data0/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/public/data0/users/hulinkang/utc/processed/query_dictionary.pkl'
     TAGS_PATH = r'/public/data0/users/hulinkang/utc/Tags.mat'
-    model_save_base = r'/public/data0/users/hulinkang/model_HL_v3/'
-    ckpt_model_path = r'/public/data0/users/hulinkang/model_HL_v3/utc_SA/'
+    model_save_base = r'/public/data0/users/hulinkang/model_HL_v4/'
+    ckpt_model_path = r'/public/data0/users/hulinkang/model_HL_v4/utc_SA/'
 else:
     # path for USTC servers
     FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
