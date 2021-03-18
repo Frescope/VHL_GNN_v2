@@ -220,4 +220,8 @@ def consistency_analysis(Tags, base):
 
 Tags = load_Tags("/data/linkang/VHL_GNN/utc/Tags.mat")
 
-consistency_analysis(Tags, "/data/linkang/VHL_GNN/utc/origin_data/")
+# consistency_analysis(Tags, "/data/linkang/VHL_GNN/utc/origin_data/")
+
+embedding = load_pickle("/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl")
+print()
+

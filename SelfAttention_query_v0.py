@@ -1,3 +1,4 @@
+# 用于query summary
 import tensorflow as tf
 import numpy as np
 
@@ -229,7 +230,20 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
        #  outputs = tf.layers.dense(outputs, num_units[1])
     return outputs
 
-def self_attention(seq_input, score, sample_poses_abs, multihead_mask, bc, seq_len, num_blocks, num_heads, drop_out, training=True):
+def query_attention(inputs, concept_embed, seq_len, scope="query_attention"):
+    # inputs: bc*seq_len*d
+    # concept_embed: bc*d2
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        Q = tf.layers.dense(inputs, D_MODEL, use_bias=True, activation=None)  # bc*T*d_model
+        K = tf.layers.dense(concept_embed, D_MODEL, use_bias=True, activation=None)  # bc*d_model
+        K = tf.expand_dims(K,1)  # bc*1*d_model
+        E = tf.layers.dense(tf.tanh(Q+K), seq_len, use_bias=True, activation=None)  # bc*T*T
+        Attention = tf.nn.softmax(E)
+        outputs = tf.matmul(Attention, inputs)  # bc*T*d
+        outputs += inputs
+    return outputs
+
+def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, bc, seq_len, num_blocks, num_heads, drop_out, training=True):
     # input: seq_input(bc*seq_len*d) score(bc*seq_len)
     # return: logits(bc,seq_len)
     with tf.variable_scope('self-attetion', reuse=tf.AUTO_REUSE):
@@ -243,7 +257,7 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, bc, seq_l
         enc = tf.layers.dropout(enc, drop_out, training=training)
 
         # blocks
-        attention_list = [] 
+        attention_list = []
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
                 # self-attention
@@ -257,9 +271,13 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, bc, seq_l
                                           training=training,
                                           causality=False)
                 attention_list.append(attention)
+                # query-aware attention
+                enc_query = query_attention(enc,concept, seq_len)
+                # enc_query = enc
+
                 # feed forward
-                enc = ff(enc, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
+                enc = ff(enc_query, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
 
         logits = tf.squeeze(tf.layers.dense(enc,1))  # bc*seq_len
 
-    return logits, attention_list
+    return logits, [enc_query, enc, logits]
