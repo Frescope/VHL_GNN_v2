@@ -60,6 +60,20 @@ def positional_encoding_abs(sample_poses_abs, bc, seq_len, scope='positional_enc
         #     outputs = tf.where(tf.equal(inputs, 0), inputs, outputs)
         return tf.to_float(outputs), position_ind
 
+def positional_encoding_rel(seq_len):
+    # 在每个序列的softmax阶段加入positional_encoding，
+    # 序列中每个节点根据与其他节点的相对位置关系加入对这个节点的encoding，投影到每个head上不同的值，然后做softmax，并入原本的attention中
+    # 返回一个TxTxd的embedding矩阵，每个multihead——attention中做一次投影，加入attention
+    position_enc = np.array([
+        [pos / np.power(10000, (i - i % 2) / D_MODEL) for i in range(D_MODEL)]
+        for pos in range(-seq_len,seq_len)])
+    embedding = np.zeros((seq_len, seq_len, D_MODEL))
+    for i in range(seq_len):
+        for j in range(seq_len):
+            rel_pos = i - j
+            embedding[i,j,:] = position_enc[rel_pos+seq_len]
+    return embedding
+
 def ln(inputs, epsilon=1e-8, scope="ln"):
     '''Applies layer normalization. See https://arxiv.org/abs/1607.06450.
     inputs: A tensor with 2 or more dimensions, where the first dimension has `batch_size`.
@@ -81,7 +95,7 @@ def ln(inputs, epsilon=1e-8, scope="ln"):
 
     return outputs
 
-def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
+def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask, pos_embedding, bc, num_heads,
                                  causality=False, dropout_rate=0.,
                                  training=True,
                                  scope="scaled_dot_product_attention"):
@@ -117,13 +131,24 @@ def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
         # outputs = tf.zeros_like(outputs)  # 没有attention输出
         attention = outputs
 
+        # positional embedding
+        pos_embed_head = tf.convert_to_tensor(pos_embedding, dtype=tf.float32)
+        pos_embed_head = tf.layers.dense(pos_embed_head, num_heads, use_bias=False, activation=None)  # TxTxh
+        pos_embed_head = tf.transpose(pos_embed_head,[2,0,1])  # hxTxT
+        pos_embed_head = tf.nn.softmax(pos_embed_head)
+        pos_embed_head = tf.expand_dims(pos_embed_head, axis=0)  # 1xhxTxT
+        pos_embed_head = tf.tile(pos_embed_head,[bc,1,1,1])  # NxhxTxT
+        T = pos_embed_head.get_shape().as_list()[-1]
+        pos_embed_head = tf.reshape(pos_embed_head,shape=(bc*num_heads,T,T))  # hNxTxT
+        outputs += pos_embed_head
+
         # dropout
         outputs = tf.layers.dropout(outputs, rate=0.4, training=training)
 
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
 
-    return outputs, km
+    return outputs, pos_embed_head
 
 def mask(inputs, key_masks=None, multihead_mask=None, type=None):
     """Masks paddings on keys or queries to inputs
@@ -152,10 +177,12 @@ def mask(inputs, key_masks=None, multihead_mask=None, type=None):
     return outputs, key_masks * padding_num
 
 def multihead_attention(queries, keys, values, key_masks, multihead_mask,
+                        batch_size=10,
                         num_heads=8,
                         dropout_rate=0,
                         training=True,
                         causality=False,
+                        pos_embedding = None,
                         scope="multihead_attention"):
     '''Applies multihead attention. See 3.2.2
     queries: A 3d tensor with shape of [N, T_q, d_model].
@@ -184,7 +211,8 @@ def multihead_attention(queries, keys, values, key_masks, multihead_mask,
         V_ = tf.concat(tf.split(V, num_heads, axis=2), axis=0)  # (h*N, T_k, d_model/h)
 
         # Attention
-        outputs, attention = scaled_dot_product_attention(Q_, K_, V_, key_masks, multihead_mask, causality, dropout_rate, training)
+        outputs, attention = scaled_dot_product_attention(Q_, K_, V_, key_masks, multihead_mask, pos_embedding, batch_size, num_heads,
+                                                          causality, dropout_rate, training)
 
         # Restore shape
         # outputs = tf.layers.dropout(
@@ -235,9 +263,10 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, bc, seq_l
     with tf.variable_scope('self-attetion', reuse=tf.AUTO_REUSE):
         src_masks = tf.math.equal(score, 0)  # socre=0判断是padding的部分
         enc = tf.layers.dense(seq_input, D_MODEL)
-       # enc *= D_MODEL ** 0.5  # scale
-        enc += positional_encoding(seq_input, seq_len)
-        # enc_pos, pos_ind = positional_encoding_abs(sample_poses_abs,bc,seq_len)
+        # enc *= D_MODEL ** 0.5  # scale
+        pos_embedding = positional_encoding_rel(seq_len)
+       #  enc += positional_encoding(seq_input, seq_len)
+       # enc_pos, pos_ind = positional_encoding_abs(sample_poses_abs,bc,seq_len)
        #  enc = enc + enc_pos
 
         enc = tf.layers.dropout(enc, drop_out, training=training)
@@ -252,9 +281,11 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, bc, seq_l
                                           values=enc,
                                           key_masks=src_masks,
                                           multihead_mask=multihead_mask,
+                                          batch_size=bc,
                                           num_heads=num_heads,
                                           dropout_rate=drop_out,
                                           training=training,
+                                          pos_embedding = pos_embedding,
                                           causality=False)
                 attention_list.append(attention)
                 # feed forward
