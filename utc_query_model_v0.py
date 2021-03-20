@@ -31,8 +31,8 @@ class Path:
     parser.add_argument('--msd', default='utc_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--lr_noam', default=2e-5, type=float)
-    parser.add_argument('--warmup', default=6000, type=int)
-    parser.add_argument('--maxstep', default=90000, type=int)
+    parser.add_argument('--warmup', default=4000, type=int)
+    parser.add_argument('--maxstep', default=40000, type=int)
     parser.add_argument('--pos_ratio',default=0.5, type=float)
     parser.add_argument('--multimask',default=1, type=int)
     parser.add_argument('--kfold',default=3,type=int)
@@ -58,7 +58,7 @@ K_FOLD_MODE = hp.kfold  # 1-4，使用不同的集合划分
 PRESTEPS = 0
 WARMUP_STEP = hp.warmup
 LR_NOAM = hp.lr_noam
-MIN_TRAIN_STEPS = 4500
+MIN_TRAIN_STEPS = 1000
 MAXSTEPS = hp.maxstep
 PHASES_STEPS = [3000]
 PHASES_LR = [4e-6, 1e-6]
@@ -91,7 +91,7 @@ if hp.server == 0:
     QUERY_SUM_BASE = r'/public/data0/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/public/data0/users/hulinkang/utc/processed/query_dictionary.pkl'
     TAGS_PATH = r'/public/data0/users/hulinkang/utc/Tags.mat'
-    model_save_base = r'/public/data0/users/hulinkang/model_HL_v4/'
+    model_save_base = r'/public/data0/users/hulinkang/model_HL_utc_query/'
     ckpt_model_path = r'/public/data0/users/hulinkang/model_HL_v4/utc_SA/'
 else:
     # path for USTC servers
