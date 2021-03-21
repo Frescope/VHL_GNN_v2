@@ -24,7 +24,7 @@ class Path:
     parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=2,type=int)
-    parser.add_argument('--seq_len',default=11,type=int)
+    parser.add_argument('--seq_len',default=60,type=int)
     parser.add_argument('--bc',default=10,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
