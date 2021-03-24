@@ -76,7 +76,7 @@ SEQ_LEN = hp.seq_len
 NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 MUlTIHEAD_ATTEN = hp.multimask
-RECEP_SCOPES = 2#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
+RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 2048
 D_CONCEPT_EMB = 300
@@ -271,8 +271,8 @@ def get_batch_train_v3(data,query_summary,concept_embedding,train_scheme,step,gp
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges)
-            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges[i])
+            end = min(sample_poses[j] + mask_ranges[i] + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
@@ -358,8 +358,8 @@ def get_batch_test_v3(data,query_summary,concept_embedding,test_scheme,step,gpu_
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges)
-            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges[i])
+            end = min(sample_poses[j] + mask_ranges[i] + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
@@ -704,7 +704,7 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
 
             if step % 3000 == 0 and step > 0:
                 model_path = model_save_dir + 'S%d-E%d' % (step+PRESTEPS, epoch)
-                saver_overall.save(sess, model_path)
+                # saver_overall.save(sess, model_path)
                 logging.info('Model Saved: '+str(step + PRESTEPS))
 
             # saving final model

@@ -78,13 +78,24 @@ SEQ_LEN = hp.seq_len
 NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 MUlTIHEAD_ATTEN = hp.multimask
-RECEP_SCOPES = 2#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
+RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 2048
 D_CONCEPT_EMB = 300
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
 load_ckpt_model = True
+
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return super(NpEncoder, self).default(obj)
 
 if hp.server == 0:
     # path for USTC server
@@ -124,7 +135,7 @@ def load_Tags(Tags_path):
     return Tags
 
 def load_feature_4fold(feature_base, label_base, Tags):
-    data = {} 
+    data = {}
     for vid in range(1,5):
         data[str(vid)] = {}
         vlength = len(Tags[vid-1])
@@ -273,8 +284,8 @@ def get_batch_train_v3(data,query_summary,concept_embedding,train_scheme,step,gp
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges)
-            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges[i])
+            end = min(sample_poses[j] + mask_ranges[i] + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
@@ -360,8 +371,8 @@ def get_batch_test_v3(data,query_summary,concept_embedding,test_scheme,step,gpu_
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges)
-            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges[i])
+            end = min(sample_poses[j] + mask_ranges[i] + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
@@ -525,6 +536,7 @@ def evaluation_query(pred_scores, data_test, query_summary, test_vids, Tags):
     PRE_values = []
     REC_values = []
     F1_values = []
+    outputs = {}
     for vid,query in test_vids:
         hl_shot = query_summary[vid][query]
         label = np.zeros(len(data_test[vid]['scores_avg']))
@@ -538,6 +550,7 @@ def evaluation_query(pred_scores, data_test, query_summary, test_vids, Tags):
         threshold = y_pred_list[math.ceil(vlength * 0.02)]
         shot_seq_pred = np.where(y_pred >= threshold)[0]
         shot_seq_label = np.where(label > 0)[0]
+        outputs[query] = shot_seq_pred
         # matching
         sim_mat = similarity_compute(Tags, int(vid), shot_seq_pred, shot_seq_label)
         weight = shot_matching(sim_mat)
@@ -550,6 +563,8 @@ def evaluation_query(pred_scores, data_test, query_summary, test_vids, Tags):
     PRE_values = np.array(PRE_values)
     REC_values = np.array(REC_values)
     F1_values = np.array(F1_values)
+    # with open('/data/linkang/model_HL_v4/utc_SA_0/outputs_'+vid+'.json','w') as file:
+    #     json.dump(outputs, file, cls=NpEncoder)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
 def model_search(model_save_dir, observe):
@@ -714,7 +729,7 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1)))
                 p, r, f = evaluation_query(pred_scores, data_test, query_summary, test_vids, Tags)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
+                logging.info('Precision: %.8f, Recall: %.8f, F1: %.8f' % (p, r, f))
                 if test_mode == 1:
                     return f
     return 0
