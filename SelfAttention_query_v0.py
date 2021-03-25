@@ -2,7 +2,7 @@
 import tensorflow as tf
 import numpy as np
 
-D_MODEL = 512
+D_MODEL = 2048
 D_FF = 2048
 MAX_VLENGTH = 1000  # 视频中帧数不会超过这个值
 
