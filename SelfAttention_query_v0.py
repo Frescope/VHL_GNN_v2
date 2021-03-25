@@ -261,16 +261,16 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
                 # self-attention
-                enc, attention = multihead_attention(queries=enc,
-                                          keys=enc,
-                                          values=enc,
-                                          key_masks=src_masks,
-                                          multihead_mask=multihead_mask,
-                                          num_heads=num_heads,
-                                          dropout_rate=drop_out,
-                                          training=training,
-                                          causality=False)
-                attention_list.append(attention)
+                # enc, attention = multihead_attention(queries=enc,
+                #                           keys=enc,
+                #                           values=enc,
+                #                           key_masks=src_masks,
+                #                           multihead_mask=multihead_mask,
+                #                           num_heads=num_heads,
+                #                           dropout_rate=drop_out,
+                #                           training=training,
+                #                           causality=False)
+                # attention_list.append(attention)
                 # query-aware attention
                 enc_query = query_attention(enc,concept, seq_len)
                 # enc_query = enc
@@ -280,4 +280,5 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
 
         logits = tf.squeeze(tf.layers.dense(enc,1))  # bc*seq_len
 
-    return logits, [enc_query, enc, logits]
+    # return logits, [enc_query, enc, logits]
+    return logits, attention_list
