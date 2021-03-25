@@ -2,7 +2,7 @@
 import tensorflow as tf
 import numpy as np
 
-D_MODEL = 2048
+D_MODEL = 1024
 D_FF = 2048
 MAX_VLENGTH = 1000  # 视频中帧数不会超过这个值
 
@@ -119,7 +119,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
         attention = outputs
 
         # dropout
-        outputs = tf.layers.dropout(outputs, rate=0.4, training=training)
+        outputs = tf.layers.dropout(outputs, rate=0.2, training=training)
 
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
