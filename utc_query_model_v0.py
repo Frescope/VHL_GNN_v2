@@ -30,7 +30,7 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='utc_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=2e-5, type=float)
+    parser.add_argument('--lr_noam', default=5e-5, type=float)
     parser.add_argument('--warmup', default=4000, type=int)
     parser.add_argument('--maxstep', default=40000, type=int)
     parser.add_argument('--pos_ratio',default=0.5, type=float)
@@ -753,7 +753,7 @@ def main(self):
         model_save_dir = model_save_base + hp.msd + '_%d/' % i
         logging.info('*'*10+str(i)+': '+model_save_dir+'*'*10)
         logging.info('*'*60)
-        run_training(data_train, data_valid, Tags, query_summary, concept_embedding, 0, model_save_dir)  # for training
+        run_training(data_train, data_test, Tags, query_summary, concept_embedding, 0, model_save_dir)  # for training
         logging.info('*' * 60)
 
 if __name__ == '__main__':
