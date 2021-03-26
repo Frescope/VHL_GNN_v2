@@ -119,7 +119,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks, multihead_mask,
         attention = outputs
 
         # dropout
-        outputs = tf.layers.dropout(outputs, rate=0.4, training=training)
+        outputs = tf.layers.dropout(outputs, rate=0.2, training=training)
 
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
@@ -260,17 +260,17 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
         attention_list = []
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
-                # # self-attention
-                # enc, attention = multihead_attention(queries=enc,
-                #                           keys=enc,
-                #                           values=enc,
-                #                           key_masks=src_masks,
-                #                           multihead_mask=multihead_mask,
-                #                           num_heads=num_heads,
-                #                           dropout_rate=drop_out,
-                #                           training=training,
-                #                           causality=False)
-                # attention_list.append(attention)
+                # self-attention
+                enc, attention = multihead_attention(queries=enc,
+                                          keys=enc,
+                                          values=enc,
+                                          key_masks=src_masks,
+                                          multihead_mask=multihead_mask,
+                                          num_heads=num_heads,
+                                          dropout_rate=drop_out,
+                                          training=training,
+                                          causality=False)
+                attention_list.append(attention)
                 # query-aware attention
                 enc_query = query_attention(enc,concept, seq_len)
                 # enc_query = enc
