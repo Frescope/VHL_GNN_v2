@@ -754,7 +754,7 @@ def main(self):
         model_save_dir = model_save_base + hp.msd + '_%d/' % i
         logging.info('*'*10+str(i)+': '+model_save_dir+'*'*10)
         logging.info('*'*60)
-        run_training(data_train, data_test, Tags, query_summary, concept_embedding, 0, model_save_dir)  # for training
+        run_training(data_train, data_valid, Tags, query_summary, concept_embedding, 0, model_save_dir)  # for training
         logging.info('*' * 60)
 
 if __name__ == '__main__':
