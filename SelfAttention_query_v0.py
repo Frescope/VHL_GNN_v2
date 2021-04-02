@@ -271,8 +271,11 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
                                           training=training,
                                           causality=False)
                 attention_list.append(attention)
-                # query-aware attention
-                enc_query = query_attention(enc,concept, seq_len)
+                # query-aware attention\
+                if i >= num_blocks-1:
+                    enc_query = query_attention(enc,concept, seq_len)
+                else:
+                    enc_query = enc
                 # enc_query = enc
 
                 # feed forward

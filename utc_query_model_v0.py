@@ -21,21 +21,21 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='9',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
-    parser.add_argument('--num_blocks',default=4,type=int)
-    parser.add_argument('--seq_len',default=31,type=int)
+    parser.add_argument('--num_blocks',default=6,type=int)
+    parser.add_argument('--seq_len',default=11,type=int)
     parser.add_argument('--bc',default=10,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='utc_SA', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=5e-5, type=float)
+    parser.add_argument('--lr_noam', default=1e-6, type=float)
     parser.add_argument('--warmup', default=4000, type=int)
     parser.add_argument('--maxstep', default=40000, type=int)
     parser.add_argument('--pos_ratio',default=0.5, type=float)
-    parser.add_argument('--multimask',default=1, type=int)
-    parser.add_argument('--kfold',default=3,type=int)
+    parser.add_argument('--multimask',default=0, type=int)
+    parser.add_argument('--kfold',default=1,type=int)
     parser.add_argument('--repeat',default=1,type=int)
     parser.add_argument('--dataset',default='utc',type=str)
 
@@ -299,6 +299,7 @@ def test_scheme_build_v4(data_test,query_summary,seq_len):
                 seq_start = max(0, seq_start)  # 截断
                 seq_list.append((vid, query, seq_start, seq_end, sample_pos, label[sample_pos]))
             test_vids.append((vid,query))  # 记录vid顺序用于evaluation
+            # break
     return seq_list, test_vids
 
 def get_batch_test_v3(data,query_summary,concept_embedding,test_scheme,step,gpu_num,bc,seq_len):

@@ -777,7 +777,7 @@ def main(self):
         for i in range(len(models_to_restore)):
             logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
             ckpt_model_path = models_to_restore[i]
-            f1 = run_training(data_train, data_train, Tags, query_summary, concept_embedding, ckpt_model_path, 1)
+            f1 = run_training(data_train, data_test, Tags, query_summary, concept_embedding, ckpt_model_path, 1)
             model_scores[ckpt_model_path] = f1
 
     f1_list = []
