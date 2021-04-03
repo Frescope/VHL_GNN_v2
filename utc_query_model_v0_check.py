@@ -99,13 +99,13 @@ class NpEncoder(json.JSONEncoder):
 
 if hp.server == 0:
     # path for USTC server
-    FEATURE_BASE = r'/public/data0/users/hulinkang/utc/features/'
-    LABEL_BASE = r'/public/data0/users/hulinkang/utc/origin_data/Global_Summaries/'
-    QUERY_SUM_BASE = r'/public/data0/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
-    EMBEDDING_PATH = r'/public/data0/users/hulinkang/utc/processed/query_dictionary.pkl'
-    TAGS_PATH = r'/public/data0/users/hulinkang/utc/Tags.mat'
-    model_save_base = r'/public/data0/users/hulinkang/model_HL_utc_query/'
-    ckpt_model_path = r'/public/data0/users/hulinkang/model_HL_v4/utc_SA/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
+    LABEL_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Global_Summaries/'
+    QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
+    EMBEDDING_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
+    TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
+    model_save_base = r'/public/data1/users/hulinkang/model_HL_utc_query/'
+    ckpt_model_path = r'/public/data1/users/hulinkang/model_HL_v4/utc_SA/'
 else:
     # path for USTC servers
     FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
