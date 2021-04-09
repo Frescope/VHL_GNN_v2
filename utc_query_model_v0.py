@@ -21,7 +21,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='6',type=str)
+    parser.add_argument('--gpu', default='1',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=11,type=int)
@@ -38,6 +38,7 @@ class Path:
     parser.add_argument('--kfold',default=1,type=int)
     parser.add_argument('--repeat',default=1,type=int)
     parser.add_argument('--dataset',default='utc',type=str)
+    parser.add_argument('--eval_epoch',default=3,type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -65,7 +66,7 @@ PHASES_LR = [4e-6, 1e-6]
 HIDDEN_SIZE = 128  # for lstm
 DROP_OUT = hp.dropout
 
-EVL_EPOCHS = 1  # epochs for evaluation
+EVAL_EPOCHS = hp.eval_epoch  # epochs for evaluation
 L2_LAMBDA = 0.005  # weightdecay loss
 GRAD_THRESHOLD = 10.0  # gradient threshold
 MAX_F1 = 0.2
@@ -79,7 +80,8 @@ MUlTIHEAD_ATTEN = hp.multimask
 RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 2048
-D_CONCEPT_EMB = 300
+# D_CONCEPT_EMB = 300  # for glove embedding
+D_CONCEPT_EMB = 2048  # for resnet50 embedding
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
 load_ckpt_model = False
@@ -90,6 +92,7 @@ if hp.server == 0:
     LABEL_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
+    CONCEPT_IMG_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_embeddding/'
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
     model_save_base = r'/public/data1/users/hulinkang/model_HL_utc_query/'
     ckpt_model_path = r'/public/data1/users/hulinkang/model_HL_v4/utc_SA/'
@@ -99,6 +102,7 @@ else:
     LABEL_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
+    CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
     model_save_base = r'/data/linkang/model_HL_v4/'
     ckpt_model_path = r'/data/linkang/model_HL_v4/utc_SA/'
@@ -149,12 +153,15 @@ def load_feature_4fold(feature_base, label_base, Tags):
 
 def query_process(query):
     # 对query进行处理
-    transfer = {"Cupglass": "Glass",
-                "Musicalinstrument": "Instrument",
-                "Petsanimal": "Animal"}
-    for i in range(len(query)):
-        if query[i] in transfer:
-            query[i] = transfer[query[i]]  # 单词置换
+
+    # # for glove embedding
+    # transfer = {"Cupglass": "Glass",
+    #             "Musicalinstrument": "Instrument",
+    #             "Petsanimal": "Animal"}
+    # for i in range(len(query)):
+    #     if query[i] in transfer:
+    #         query[i] = transfer[query[i]]  # 单词置换
+
     query.sort()  # 按字典序组合两个词作为key
     return query
 
@@ -670,7 +677,8 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
                 logging.info(' Step %d: %.3f sec' % (step, duration))
                 logging.info(' Evaluate: '+str(step)+' Epoch: '+str(epoch))
                 logging.info(' Average Loss: '+str(np.mean(loss_array))+' Min Loss: '+str(np.min(loss_array))+' Max Loss: '+str(np.max(loss_array)))
-
+                if not int(epoch) % EVAL_EPOCHS == 0:
+                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
@@ -720,8 +728,18 @@ def main(self):
     Tags = load_Tags(TAGS_PATH)
     data = load_feature_4fold(FEATURE_BASE, LABEL_BASE, Tags)
     query_summary = load_query_summary(QUERY_SUM_BASE)
-    with open(EMBEDDING_PATH,'rb') as f:
-        concept_embedding = pickle.load(f)
+
+    # # for glove embedding
+    # with open(EMBEDDING_PATH,'rb') as f:
+    #     concept_embedding = pickle.load(f)
+
+    # for resnet50 embedding
+    concept_embedding = {}
+    for root, dirs, files in os.walk(CONCEPT_IMG_EMB_DIR):
+        for file in files:
+            concept = file.split('_')[0]
+            embedding = np.load(os.path.join(root,file))
+            concept_embedding[concept] = np.mean(embedding, axis=0)
 
     # split data
     data_train = {}
