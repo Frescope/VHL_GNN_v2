@@ -103,6 +103,7 @@ if hp.server == 0:
     LABEL_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
+    CONCEPT_IMG_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_embeddding/'
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
     model_save_base = r'/public/data1/users/hulinkang/model_HL_utc_query/'
     ckpt_model_path = r'/public/data1/users/hulinkang/model_HL_v4/utc_SA/'
@@ -112,6 +113,7 @@ else:
     LABEL_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
+    CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
     model_save_base = r'/data/linkang/model_HL_v4/'
     ckpt_model_path = r'/data/linkang/model_HL_v4/utc_SA/'
@@ -162,12 +164,15 @@ def load_feature_4fold(feature_base, label_base, Tags):
 
 def query_process(query):
     # 对query进行处理
-    transfer = {"Cupglass": "Glass",
-                "Musicalinstrument": "Instrument",
-                "Petsanimal": "Animal"}
-    for i in range(len(query)):
-        if query[i] in transfer:
-            query[i] = transfer[query[i]]  # 单词置换
+
+    # # for glove embedding
+    # transfer = {"Cupglass": "Glass",
+    #             "Musicalinstrument": "Instrument",
+    #             "Petsanimal": "Animal"}
+    # for i in range(len(query)):
+    #     if query[i] in transfer:
+    #         query[i] = transfer[query[i]]  # 单词置换
+
     query.sort()  # 按字典序组合两个词作为key
     return query
 
@@ -741,8 +746,18 @@ def main(self):
     Tags = load_Tags(TAGS_PATH)
     data = load_feature_4fold(FEATURE_BASE, LABEL_BASE, Tags)
     query_summary = load_query_summary(QUERY_SUM_BASE)
-    with open(EMBEDDING_PATH,'rb') as f:
-        concept_embedding = pickle.load(f)
+
+    # # for glove embedding
+    # with open(EMBEDDING_PATH,'rb') as f:
+    #     concept_embedding = pickle.load(f)
+
+    # for resnet50 embedding
+    concept_embedding = {}
+    for root, dirs, files in os.walk(CONCEPT_IMG_EMB_DIR):
+        for file in files:
+            concept = file.split('_')[0]
+            embedding = np.load(os.path.join(root,file))
+            concept_embedding[concept] = np.mean(embedding, axis=0)
 
     # split data
     data_train = {}
