@@ -81,7 +81,8 @@ MUlTIHEAD_ATTEN = hp.multimask
 RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 2048
-D_CONCEPT_EMB = 300
+# D_CONCEPT_EMB = 300  # for glove embedding
+D_CONCEPT_EMB = 2048  # for resnet50 embedding
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
 load_ckpt_model = True
