@@ -272,13 +272,15 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
                                           causality=False)
                 attention_list.append(attention)
                 # query-aware attention\
-                if i >= num_blocks-1:
-                    enc_query = query_attention(enc,concept, seq_len)
-                else:
-                    concept_ext = tf.layers.dense(concept, D_MODEL, use_bias=True, activation=None)
-                    concept_ext = tf.expand_dims(concept_ext, 1)
-                    enc_query = enc + concept_ext
-                # enc_query = enc
+                # if i >= num_blocks-1:
+                #     enc_query = query_attention(enc,concept, seq_len)
+                # else:
+                #     concept_ext = tf.layers.dense(concept, D_MODEL, use_bias=True, activation=None)
+                #     concept_ext = tf.expand_dims(concept_ext, 1)
+                #     enc_query = enc + concept_ext
+                concept_ext = tf.layers.dense(concept, D_MODEL, use_bias=True, activation=None)
+                concept_ext = tf.expand_dims(concept_ext, 1)
+                enc_query = enc + concept_ext
 
                 # feed forward
                 enc = ff(enc_query, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
