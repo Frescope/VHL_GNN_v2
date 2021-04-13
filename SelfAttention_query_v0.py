@@ -275,7 +275,7 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
                 concept_ext = tf.layers.dense(concept, D_MODEL, use_bias=True, activation=None)
                 concept_ext = tf.expand_dims(concept_ext, 1)
                 enc_query = enc + concept_ext
-                if i >= num_blocks-2:
+                if i >= num_blocks-1:
                     enc_query = query_attention(enc_query, concept, seq_len)
 
                 # feed forward
