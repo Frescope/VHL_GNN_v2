@@ -195,11 +195,12 @@ def multihead_attention(queries, keys, values, key_masks, multihead_mask,
 
 
         # Normalize
-        outputs = tf.layers.dropout(
-            ln(outputs), dropout_rate, training=training)
+        # outputs = tf.layers.dropout(
+        #     ln(outputs), dropout_rate, training=training)
+        outputs = tf.layers.dropout(outputs, dropout_rate, training=training)  # ln_new
         # Residual connection
         outputs += queries
-
+        outputs = ln(outputs)  # ln_new
     return outputs, attention
 
 def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
@@ -219,7 +220,8 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
         outputs = tf.layers.dense(outputs, num_units[1])
 
         # Normalize
-        outputs = tf.layers.dropout(ln(outputs), dropout_rate)
+        # outputs = tf.layers.dropout(ln(outputs), dropout_rate)
+        outputs = tf.layers.dropout(outputs, dropout_rate)  # ln_new
         # Residual connection
         outputs += inputs
        # outputs_m = tf.reduce_mean(outputs, 2)
@@ -261,6 +263,7 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
                 # self-attention
+                enc = ln(enc)  # ln_new
                 enc, attention = multihead_attention(queries=enc,
                                           keys=enc,
                                           values=enc,
