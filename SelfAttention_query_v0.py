@@ -195,12 +195,12 @@ def multihead_attention(queries, keys, values, key_masks, multihead_mask,
 
 
         # Normalize
-        # outputs = tf.layers.dropout(
-        #     ln(outputs), dropout_rate, training=training)
-        outputs = tf.layers.dropout(outputs, dropout_rate, training=training)  # ln_new
+        outputs = tf.layers.dropout(
+            ln(outputs), dropout_rate, training=training)
+        # outputs = tf.layers.dropout(outputs, dropout_rate, training=training)  # ln_new
         # Residual connection
         outputs += queries
-        outputs = ln(outputs)  # ln_new
+        # outputs = ln(outputs)  # ln_new
     return outputs, attention
 
 def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
@@ -220,8 +220,9 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
         outputs = tf.layers.dense(outputs, num_units[1])
 
         # Normalize
-        # outputs = tf.layers.dropout(ln(outputs), dropout_rate)
-        outputs = tf.layers.dropout(outputs, dropout_rate)  # ln_new
+        outputs = tf.layers.dropout(ln(outputs), dropout_rate)
+        # outputs = tf.layers.dropout(outputs, dropout_rate)  # ln_new
+
         # Residual connection
         outputs += inputs
        # outputs_m = tf.reduce_mean(outputs, 2)
@@ -245,7 +246,8 @@ def query_attention(inputs, concept_embed, seq_len, scope="query_attention"):
         outputs += inputs
     return outputs
 
-def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, bc, seq_len, num_blocks, num_heads, drop_out, training=True):
+def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept_txt, concept_img,
+                   bc, seq_len, num_blocks, num_heads, drop_out, training=True):
     # input: seq_input(bc*seq_len*d) score(bc*seq_len)
     # return: logits(bc,seq_len)
     with tf.variable_scope('self-attetion', reuse=tf.AUTO_REUSE):
@@ -258,12 +260,16 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
 
         enc = tf.layers.dropout(enc, drop_out, training=training)
 
+        # concept proecss
+        concept = tf.layers.dense(concept_txt, D_MODEL, use_bias=True, activation=None) \
+                  + tf.layers.dense(concept_img, D_MODEL, use_bias=True, activation=None)
+
         # blocks
         attention_list = []
         for i in range(num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
                 # self-attention
-                enc = ln(enc)  # ln_new
+                # enc = ln(enc)  # ln_new
                 enc, attention = multihead_attention(queries=enc,
                                           keys=enc,
                                           values=enc,
@@ -276,9 +282,7 @@ def self_attention(seq_input, score, sample_poses_abs, multihead_mask, concept, 
                 attention_list.append(attention)
 
                 if i < num_blocks-1:
-                    concept_ext = tf.layers.dense(concept, D_MODEL, use_bias=True, activation=None)
-                    concept_ext = tf.expand_dims(concept_ext, 1)
-                    enc_query = enc + concept_ext
+                    enc_query = enc + tf.expand_dims(concept, 1)
                 else:
                     enc_query = query_attention(enc, concept, seq_len)
 

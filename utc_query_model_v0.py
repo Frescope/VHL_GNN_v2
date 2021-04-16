@@ -21,7 +21,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='1',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=11,type=int)
@@ -80,8 +80,8 @@ MUlTIHEAD_ATTEN = hp.multimask
 RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 2048
-# D_CONCEPT_EMB = 300  # for glove embedding
-D_CONCEPT_EMB = 2048  # for resnet50 embedding
+D_TXT_EMB = 300  # for glove embedding
+D_IMG_EMB = 2048  # for resnet50 embedding
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
 
 load_ckpt_model = False
@@ -151,20 +151,6 @@ def load_feature_4fold(feature_base, label_base, Tags):
         logging.info('Vid: '+str(vid)+' Feature: '+str(feature.shape)+' Label: '+str(label.shape))
     return data
 
-def query_process(query):
-    # 对query进行处理
-
-    # # for glove embedding
-    # transfer = {"Cupglass": "Glass",
-    #             "Musicalinstrument": "Instrument",
-    #             "Petsanimal": "Animal"}
-    # for i in range(len(query)):
-    #     if query[i] in transfer:
-    #         query[i] = transfer[query[i]]  # 单词置换
-
-    query.sort()  # 按字典序组合两个词作为key
-    return query
-
 def load_query_summary(query_sum_base):
     # 加载query-focused oracle summary
     summary = {}
@@ -173,7 +159,8 @@ def load_query_summary(query_sum_base):
         summary_dir = query_sum_base + 'P0%d/' % i
         for root, dirs, files in os.walk(summary_dir):
             for file in files:
-                concepts = query_process(file[:file.find("_oracle.txt")].split('_'))  # 提取query单词，置换并排序
+                concepts = file[:file.find("_oracle.txt")].split('_')  # 提取query单词，置换并排序
+                concepts.sort()
                 hl_shots = []
                 with open(os.path.join(root,file),'r') as f:
                     for line in f.readlines():
@@ -241,13 +228,17 @@ def get_batch_train_v3(data,query_summary,concept_embedding,train_scheme,step,gp
     features = []
     scores_avgs = []
     labels = []
-    concept1_embs = []
-    concept2_embs = []
+    concept1_txts = []
+    concept1_imgs = []
+    concept2_txts = []
+    concept2_imgs = []
     for i in range(len(batch_index)):
         vid,query,seq_start,seq_end,sample_pos = batch_index[i]
         c1,c2 = query.split('_')
-        concept1_embs.append(concept_embedding[c1])
-        concept2_embs.append(concept_embedding[c2])
+        concept1_txts.append(concept_embedding[c1]['txt'])
+        concept1_imgs.append(concept_embedding[c1]['img'])
+        concept2_txts.append(concept_embedding[c2]['txt'])
+        concept2_imgs.append(concept_embedding[c2]['img'])
         vlength = len(data[vid]['scores_avg'])
         seq_end = min(vlength,seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
@@ -264,8 +255,10 @@ def get_batch_train_v3(data,query_summary,concept_embedding,train_scheme,step,gp
             labels.append(1)
         else:
             labels.append(0)
-    concept1_embs = np.array(concept1_embs).reshape((gpu_num * bc, D_CONCEPT_EMB))
-    concept2_embs = np.array(concept2_embs).reshape((gpu_num * bc, D_CONCEPT_EMB))
+    concept1_txts = np.array(concept1_txts).reshape((gpu_num * bc, D_TXT_EMB))
+    concept1_imgs = np.array(concept1_imgs).reshape((gpu_num * bc, D_IMG_EMB))
+    concept2_txts = np.array(concept2_txts).reshape((gpu_num * bc, D_TXT_EMB))
+    concept2_imgs = np.array(concept2_imgs).reshape((gpu_num * bc, D_IMG_EMB))
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
     labels = np.array(labels).reshape((gpu_num * bc,))
@@ -287,7 +280,8 @@ def get_batch_train_v3(data,query_summary,concept_embedding,train_scheme,step,gp
     # check
     if np.sum(labels - np.array(batch_labels)) != 0:
         logging.info('Label Mismatch: %d' % step)
-    return features, scores_avgs, labels, sample_poses, mask, concept1_embs, concept2_embs
+    return features, scores_avgs, labels, sample_poses, mask, \
+           concept1_txts, concept1_imgs, concept2_txts, concept2_imgs
 
 def test_scheme_build_v4(data_test,query_summary,seq_len):
     # 加入query，对每个视频，依次测试每个query，需要记录vid以及query的顺序
@@ -329,13 +323,17 @@ def get_batch_test_v3(data,query_summary,concept_embedding,test_scheme,step,gpu_
     features = []
     scores_avgs = []
     labels = []
-    concept1_embs = []
-    concept2_embs = []
+    concept1_txts = []
+    concept1_imgs = []
+    concept2_txts = []
+    concept2_imgs = []
     for i in range(len(batch_index)):
         vid,query,seq_start,seq_end,sample_pos = batch_index[i]
         c1,c2 = query.split('_')
-        concept1_embs.append(concept_embedding[c1])
-        concept2_embs.append(concept_embedding[c2])
+        concept1_txts.append(concept_embedding[c1]['txt'])
+        concept1_imgs.append(concept_embedding[c1]['img'])
+        concept2_txts.append(concept_embedding[c2]['txt'])
+        concept2_imgs.append(concept_embedding[c2]['img'])
         vlength = len(data[vid]['scores_avg'])
         seq_end = min(vlength,seq_end)  # 截断
         padding_len = seq_len - (seq_end - seq_start)
@@ -352,8 +350,10 @@ def get_batch_test_v3(data,query_summary,concept_embedding,test_scheme,step,gpu_
             labels.append(1)
         else:
             labels.append(0)
-    concept1_embs = np.array(concept1_embs).reshape((gpu_num * bc, D_CONCEPT_EMB))
-    concept2_embs = np.array(concept2_embs).reshape((gpu_num * bc, D_CONCEPT_EMB))
+    concept1_txts = np.array(concept1_txts).reshape((gpu_num * bc, D_TXT_EMB))
+    concept1_imgs = np.array(concept1_imgs).reshape((gpu_num * bc, D_IMG_EMB))
+    concept2_txts = np.array(concept2_txts).reshape((gpu_num * bc, D_TXT_EMB))
+    concept2_imgs = np.array(concept2_imgs).reshape((gpu_num * bc, D_IMG_EMB))
     features = np.array(features).reshape((gpu_num * bc, seq_len, D_INPUT))
     scores_avgs = np.array(scores_avgs).reshape((gpu_num * bc, seq_len))
     labels = np.array(labels).reshape((gpu_num * bc,))
@@ -375,7 +375,8 @@ def get_batch_test_v3(data,query_summary,concept_embedding,test_scheme,step,gpu_
     # check
     if np.sum(labels - np.array(batch_labels)) != 0:
         logging.info('Label Mismatch: %d' % step)
-    return features, scores_avgs, labels, sample_poses, mask, concept1_embs, concept2_embs
+    return features, scores_avgs, labels, sample_poses, mask, \
+           concept1_txts, concept1_imgs, concept2_txts, concept2_imgs
 
 def _variable_on_cpu(name, shape, initializer):
     with tf.device('/cpu:0'):
@@ -395,7 +396,9 @@ def conv3d(name, l_input, w, b):
           b
           )
 
-def query_score_pred(features,scores_avg,sample_poses,multihead_mask,concept1,concept2,drop_out,training):
+def query_score_pred(features,scores_avg,sample_poses,multihead_mask,
+                     concept1_txt,concept1_img,concept2_txt,concept2_img,
+                     drop_out,training):
     # self-attention
     # feature形式为bc*seq_len个帧
     # 对encoder来说每个gpu上输入bc*seq_len*d，即每次输入bc个序列，每个序列长seq_len，每个元素维度为d
@@ -404,9 +407,9 @@ def query_score_pred(features,scores_avg,sample_poses,multihead_mask,concept1,co
     # 在测试过程中，依次计算两个concept上的得分，求和后作为整体得分，筛选hl
     seq_input = tf.reshape(features, shape=(BATCH_SIZE, SEQ_LEN, -1))  # bc*seq_len*1024
     multihead_mask = tf.reshape(multihead_mask, shape=(NUM_HEADS * BATCH_SIZE, SEQ_LEN))
-    logits1, attention_list1 = self_attention(seq_input, scores_avg, None, multihead_mask, concept1,
+    logits1, attention_list1 = self_attention(seq_input, scores_avg, None, multihead_mask, concept1_txt, concept1_img,
                                             BATCH_SIZE, SEQ_LEN, NUM_BLOCKS, NUM_HEADS, drop_out, training)  # bc*seq_len
-    logits2, attention_list2 = self_attention(seq_input, scores_avg, None, multihead_mask, concept2,
+    logits2, attention_list2 = self_attention(seq_input, scores_avg, None, multihead_mask, concept2_txt, concept2_img,
                                             BATCH_SIZE, SEQ_LEN, NUM_BLOCKS, NUM_HEADS, drop_out,
                                             training)  # bc*seq_len
 
@@ -571,8 +574,10 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
         labels_holder = tf.placeholder(tf.float32,shape=(BATCH_SIZE * GPU_NUM,))
         sample_poses_holder = tf.placeholder(tf.int32,shape=(BATCH_SIZE * GPU_NUM,))
         mask_holder = tf.placeholder(tf.float32,shape=(NUM_HEADS, BATCH_SIZE * GPU_NUM, SEQ_LEN))
-        concept1_holder = tf.placeholder(tf.float32,shape=(BATCH_SIZE * GPU_NUM,D_CONCEPT_EMB))
-        concept2_holder = tf.placeholder(tf.float32,shape=(BATCH_SIZE * GPU_NUM,D_CONCEPT_EMB))
+        concept1_txt_holder = tf.placeholder(tf.float32,shape=(BATCH_SIZE * GPU_NUM,D_TXT_EMB))
+        concept1_img_holder = tf.placeholder(tf.float32, shape=(BATCH_SIZE * GPU_NUM, D_IMG_EMB))
+        concept2_txt_holder = tf.placeholder(tf.float32, shape=(BATCH_SIZE * GPU_NUM, D_TXT_EMB))
+        concept2_img_holder = tf.placeholder(tf.float32, shape=(BATCH_SIZE * GPU_NUM, D_IMG_EMB))
         dropout_holder = tf.placeholder(tf.float32,shape=())
         training_holder = tf.placeholder(tf.bool,shape=())
 
@@ -593,13 +598,16 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
                 labels = labels_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE,]
                 scores_avg = scores_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
                 sample_poses = sample_poses_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE,]
-                concept1 = concept1_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
-                concept2 = concept2_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
+                concept1_txt = concept1_txt_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
+                concept1_img = concept1_img_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
+                concept2_txt = concept2_txt_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
+                concept2_img = concept2_img_holder[gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]
                 multihead_mask = mask_holder[:, gpu_index * BATCH_SIZE:(gpu_index + 1) * BATCH_SIZE, :]  # 从bc维切割
 
                 # predict scores
                 logits1, logits2, atlist_one1, atlist_one2 = query_score_pred(features, scores_avg, sample_poses, multihead_mask,
-                                                concept1, concept2, dropout_holder, training_holder)
+                                                                              concept1_txt, concept1_img, concept2_txt, concept2_img,
+                                                                              dropout_holder, training_holder)
                 logits = (logits1 + logits2) / 2
                 logits_list.append(logits)
                 attention_list1 += atlist_one1  # 逐个拼接各个卡上的attention_list
@@ -649,7 +657,7 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
         ob_loss = []
         timepoint = time.time()
         for step in range(MAXSTEPS):
-            features_b, scores_avg_b, labels_b, sample_poses_b, mask_b, concept1, concept2 = get_batch_train_v3(
+            features_b, scores_avg_b, labels_b, sample_poses_b, mask_b, c1txt_b, c1img_b, c2txt_b, c2img_b = get_batch_train_v3(
                 data_train, query_summary, concept_embedding, train_scheme, step,GPU_NUM,BATCH_SIZE,SEQ_LEN)
             observe = sess.run([train_op] + loss_list + logits_list + attention_list1 + [global_step, lr],
                                feed_dict={features_holder: features_b,
@@ -657,8 +665,10 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
                                           labels_holder: labels_b,
                                           sample_poses_holder: sample_poses_b,
                                           mask_holder: mask_b,
-                                          concept1_holder: concept1,
-                                          concept2_holder: concept2,
+                                          concept1_txt_holder: c1txt_b,
+                                          concept1_img_holder: c1img_b,
+                                          concept2_txt_holder: c2txt_b,
+                                          concept2_img_holder: c2img_b,
                                           dropout_holder: DROP_OUT,
                                           training_holder: True})
 
@@ -682,14 +692,16 @@ def run_training(data_train, data_test, Tags, query_summary, concept_embedding, 
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
-                    features_b, scores_avg_b, labels_b, sample_poses_b, mask_b, concept1, concept2 = get_batch_test_v3(
+                    features_b, scores_avg_b, labels_b, sample_poses_b, mask_b, c1txt_b, c1img_b, c2txt_b, c2img_b = get_batch_test_v3(
                         data_test, query_summary, concept_embedding, test_scheme, test_step, GPU_NUM, BATCH_SIZE, SEQ_LEN)
                     logits_temp_list = sess.run(logits_list, feed_dict={features_holder: features_b,
                                                                         scores_holder: scores_avg_b,
                                                                         sample_poses_holder: sample_poses_b,
                                                                         mask_holder: mask_b,
-                                                                        concept1_holder: concept1,
-                                                                        concept2_holder: concept2,
+                                                                        concept1_txt_holder: c1txt_b,
+                                                                        concept1_img_holder: c1img_b,
+                                                                        concept2_txt_holder: c2txt_b,
+                                                                        concept2_img_holder: c2img_b,
                                                                         training_holder: False,
                                                                         dropout_holder: 0})
                     for preds in logits_temp_list:
@@ -729,17 +741,26 @@ def main(self):
     data = load_feature_4fold(FEATURE_BASE, LABEL_BASE, Tags)
     query_summary = load_query_summary(QUERY_SUM_BASE)
 
-    # # for glove embedding
-    # with open(EMBEDDING_PATH,'rb') as f:
-    #     concept_embedding = pickle.load(f)
-
-    # for resnet50 embedding
+    # for concept embedding
     concept_embedding = {}
+    concept_transfer = {"Cupglass": "Glass",
+                "Musicalinstrument": "Instrument",
+                "Petsanimal": "Animal"}
+    with open(EMBEDDING_PATH,'rb') as f:
+        txt_embedding = pickle.load(f)
+    img_embedding = {}
     for root, dirs, files in os.walk(CONCEPT_IMG_EMB_DIR):
         for file in files:
             concept = file.split('_')[0]
             embedding = np.load(os.path.join(root,file))
-            concept_embedding[concept] = np.mean(embedding, axis=0)
+            img_embedding[concept] = np.mean(embedding, axis=0)
+    for key in img_embedding:
+        concept_embedding[key] = {}
+        txt_key = img_key = key
+        if txt_key in concept_transfer:
+            txt_key = concept_transfer[txt_key]
+        concept_embedding[key]['txt'] = txt_embedding[txt_key]
+        concept_embedding[key]['img'] = img_embedding[img_key]
 
     # split data
     data_train = {}
