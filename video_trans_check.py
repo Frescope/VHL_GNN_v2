@@ -589,13 +589,13 @@ def main(self):
                 f1 = run_testing(data_train, data_test, query_summary, Tags, concepts, concept_embedding, model_path)
                 scores.append(f1)
         model_scores[str((kfold + 3) % 4 + 1)] = scores
-    scores_all = []
+    scores_all = 0
     for vid in model_scores:
         scores = model_scores[vid]
         logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
                      (vid, np.array(scores).mean(), str(scores)))
-        scores_all += scores
-    logging.info('Overall Results: %.3f' % np.array(scores_all).mean())
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()

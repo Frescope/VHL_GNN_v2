@@ -187,21 +187,24 @@ def transformer(features, labels, scores_src, scores_tgt, txt_emb, img_emb, drop
         # encoder & decoder inputs
         image_nodes = tf.layers.dense(img_emb, D_MODEL, use_bias=True, activation=None)
         visual_nodes = tf.layers.dense(features, D_MODEL, use_bias=True, activation=None)
-        decoder_input = tf.layers.dense(labels, D_MODEL, use_bias=True, activation=None)
+        # decoder_input = tf.layers.dense(labels, D_MODEL, use_bias=True, activation=None)
 
         visual_nodes += positional_encoding(visual_nodes, hp.seq_len)
-        decoder_input += positional_encoding(decoder_input, hp.seq_len)
+        # decoder_input += positional_encoding(decoder_input, hp.seq_len)
         input_nodes = tf.concat([visual_nodes, image_nodes], axis=1)
 
         src_masks = tf.math.equal(scores_src, 0)  # 标记输入的节点序列内哪些是padding部分
-        tgt_masks = tf.math.equal(scores_tgt, 0)
+        # tgt_masks = tf.math.equal(scores_tgt, 0)
 
         # encoding & decoding
         memory = encoder(input_nodes, src_masks, drop_out, training, hp)
-        decoder_output = decoder(decoder_input, memory, src_masks, tgt_masks, drop_out, training, hp)
+        # decoder_output = decoder(decoder_input, memory, src_masks, tgt_masks, drop_out, training, hp)
+        decoder_output = memory[:, :hp.seq_len, :]
 
         c_num = labels.get_shape().as_list()[-1]
-        logits = tf.layers.dense(decoder_output, c_num, use_bias=True, activation=tf.nn.relu)
+        logits = tf.layers.dense(decoder_output, 512, use_bias=True, activation=tf.nn.relu)
+        logits = tf.layers.dense(logits, 256, use_bias=True, activation=tf.nn.relu)
+        logits = tf.layers.dense(logits, c_num, use_bias=True, activation=None)
         return logits
 
 
