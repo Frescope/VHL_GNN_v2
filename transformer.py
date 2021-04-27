@@ -189,7 +189,7 @@ def transformer(features, labels, scores_src, scores_tgt, txt_emb, img_emb, drop
         visual_nodes = tf.layers.dense(features, D_MODEL, use_bias=True, activation=None)
         # decoder_input = tf.layers.dense(labels, D_MODEL, use_bias=True, activation=None)
 
-        visual_nodes += positional_encoding(visual_nodes, hp.seq_len)
+        # visual_nodes += positional_encoding(visual_nodes, hp.seq_len)
         # decoder_input += positional_encoding(decoder_input, hp.seq_len)
         input_nodes = tf.concat([visual_nodes, image_nodes], axis=1)
 
