@@ -31,6 +31,7 @@ class Path:
     # parser.add_argument('--kfold',default=0,type=int)
     parser.add_argument('--repeat',default=1,type=int)
     parser.add_argument('--observe', default=0, type=int)
+    parser.add_argument('--eval_epoch', default=1, type=int)
 
 hparams = Path()
 parser = hparams.parser
