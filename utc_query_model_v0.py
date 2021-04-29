@@ -21,7 +21,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='3',type=str)
+    parser.add_argument('--gpu', default='7',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=11,type=int)
@@ -80,7 +80,8 @@ MUlTIHEAD_ATTEN = hp.multimask
 RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 # D_INPUT = 2048  # for resnet
-D_INPUT = 4096  # for C3D
+# D_INPUT = 4096  # for C3D
+D_INPUT = 600  # for I3D
 D_TXT_EMB = 300  # for glove embedding
 D_IMG_EMB = 2048  # for resnet50 embedding
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
@@ -89,7 +90,7 @@ load_ckpt_model = False
 
 if hp.server == 0:
     # path for USTC server
-    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/i3d_features/'
     LABEL_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
@@ -99,7 +100,7 @@ if hp.server == 0:
     ckpt_model_path = r'/public/data1/users/hulinkang/model_HL_v4/utc_SA/'
 else:
     # path for USTC servers
-    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/i3d_features/'
     LABEL_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
@@ -133,10 +134,12 @@ def load_feature_4fold(feature_base, label_base, Tags):
         vlength = len(Tags[vid-1])
         # feature
         # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
-        feature_path = feature_base + 'V%d_C3D.h5' % vid
+        # feature_path = feature_base + 'V%d_C3D.h5' % vid
+        feature_path = feature_base + 'V%d_I3D_2.npy' % vid
         label_path = label_base + 'P0%d/oracle.txt' % vid
-        f = h5py.File(feature_path, 'r')
-        feature = f['feature'][()][:vlength]
+        # f = h5py.File(feature_path, 'r')
+        # feature = f['feature'][()][:vlength]
+        feature = np.load(feature_path)
         data[str(vid)]['feature'] = feature
         # label
         with open(label_path, 'r') as f:

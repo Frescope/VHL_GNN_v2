@@ -17,7 +17,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='3',type=str)
+    parser.add_argument('--gpu', default='5',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=30,type=int)
@@ -47,7 +47,8 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-D_FEATURE = 2048
+# D_FEATURE = 2048  # for resnet
+D_FEATURE= 600  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
 CONCEPT_NUM = 48
@@ -60,7 +61,7 @@ PRESTEPS = 0
 
 if hp.server == 0:
     # path for JD server
-    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/i3d_features/'
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
     LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s1.json'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
@@ -71,7 +72,7 @@ if hp.server == 0:
     CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
 else:
     # path for USTC servers
-    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/i3d_features/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
     LABEL_PATH = r'/data/linkang/VHL_GNN/utc/videotrans_label_s1.json'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
@@ -101,17 +102,19 @@ def load_Tags(Tags_path):
 
 def load_feature_4fold(feature_base, labe_path, Tags):
     # 注意label对应的concept是按照字典序排列的
-    with open(LABEL_PATH, 'r') as file:
+    with open(labe_path, 'r') as file:
         labels = json.load(file)
     data = {}
     for vid in range(1,5):
         data[str(vid)] = {}
         vlength = len(Tags[vid-1])
         # feature
-        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
         # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        f = h5py.File(feature_path, 'r')
-        feature = f['feature'][()][:vlength]
+        feature_path = feature_base + 'V%d_I3D_2.npy' % vid
+        # f = h5py.File(feature_path, 'r')
+        # feature = f['feature'][()][:vlength]
+        feature = np.load(feature_path)
         data[str(vid)]['feature'] = feature
         # label
         label = np.array(labels[str(vid)])[:,:vlength].T

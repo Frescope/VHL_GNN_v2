@@ -81,7 +81,8 @@ MUlTIHEAD_ATTEN = hp.multimask
 RECEP_SCOPES = list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 # D_INPUT = 2048  # for resnet
-D_INPUT = 4096  # for C3D
+# D_INPUT = 4096  # for C3D
+D_INPUT = 600  # for I3D
 D_TXT_EMB = 300  # for glove embedding
 D_IMG_EMB = 2048  # for resnet50 embedding
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
@@ -145,10 +146,12 @@ def load_feature_4fold(feature_base, label_base, Tags):
         vlength = len(Tags[vid-1])
         # feature
         # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
-        feature_path = feature_base + 'V%d_C3D.h5' % vid
+        # feature_path = feature_base + 'V%d_C3D.h5' % vid
+        feature_path = feature_base + 'V%d_I3D_2.npy' % vid
         label_path = label_base + 'P0%d/oracle.txt' % vid
-        f = h5py.File(feature_path, 'r')
-        feature = f['feature'][()][:vlength]
+        # f = h5py.File(feature_path, 'r')
+        # feature = f['feature'][()][:vlength]
+        feature = np.load(feature_path)
         data[str(vid)]['feature'] = feature
         # label
         with open(label_path, 'r') as f:

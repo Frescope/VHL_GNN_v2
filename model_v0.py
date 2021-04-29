@@ -71,7 +71,7 @@ SEQ_LEN = hp.seq_len
 NUM_BLOCKS = hp.num_blocks
 NUM_HEADS = hp.num_heads
 MUlTIHEAD_ATTEN = hp.multimask
-RECEP_SCOPES = 6#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
+RECEP_SCOPES = 2#list(range(64))  # 用于multihead mask 从取样位置开始向两侧取的样本数量（单侧）
 
 D_INPUT = 1024
 POS_RATIO = hp.pos_ratio  # batch中正样本比例上限
@@ -308,10 +308,9 @@ def get_batch_train(data,train_scheme,step,gpu_num,bc,seq_len):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
            # start = max(0, sample_poses[j] - mask_ranges +i)
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges -i)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
@@ -378,10 +377,9 @@ def get_batch_train_v2(data,train_scheme,step,gpu_num,bc,seq_len):
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i,j,start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
@@ -453,10 +451,9 @@ def get_batch_test(data,test_scheme,step,gpu_num,bc,seq_len):
     for i in range(h):
         # 对于每一个head，用一个感受范围做一组mask
         for j in range(gpu_num * bc):
-            start = max(0, sample_poses[j] - mask_ranges + i)
-            end = min(sample_poses[j] + mask_ranges + 1 - h + i, seq_len)
+            start = max(0, sample_poses[j] - mask_ranges)
+            end = min(sample_poses[j] + mask_ranges + 1, seq_len)
             mask[i, j, start:end] = 0  # 第i个head第j个序列中的某一部分开放计算
-            mask[i, j, sample_poses[j]] = 0
     if not MUlTIHEAD_ATTEN:
         mask = np.zeros_like(mask)
 
