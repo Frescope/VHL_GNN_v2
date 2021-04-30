@@ -17,7 +17,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='5',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=30,type=int)
@@ -47,10 +47,11 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-# D_FEATURE = 2048  # for resnet
-D_FEATURE= 600  # for I3D
+D_FEATURE = 2048  # for resnet
+# D_FEATURE= 600  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
+D_OUTPUT = 45  # label_S1对应48，label_S2对应45
 CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold
@@ -61,9 +62,9 @@ PRESTEPS = 0
 
 if hp.server == 0:
     # path for JD server
-    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/i3d_features/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
-    LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s1.json'
+    LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s2.json'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     CONCEPT_DICT_PATH = r'/public/data1/users/hulinkang/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
@@ -72,9 +73,9 @@ if hp.server == 0:
     CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
 else:
     # path for USTC servers
-    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/i3d_features/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
-    LABEL_PATH = r'/data/linkang/VHL_GNN/utc/videotrans_label_s1.json'
+    LABEL_PATH = r'/data/linkang/VHL_GNN/utc/videotrans_label_s2.json'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     CONCEPT_DICT_PATH = r'/data/linkang/VHL_GNN/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
@@ -109,16 +110,17 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         data[str(vid)] = {}
         vlength = len(Tags[vid-1])
         # feature
-        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
         # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        feature_path = feature_base + 'V%d_I3D_2.npy' % vid
-        # f = h5py.File(feature_path, 'r')
-        # feature = f['feature'][()][:vlength]
-        feature = np.load(feature_path)
+        # feature_path = feature_base + 'V%d_I3D_2.npy' % vid
+        f = h5py.File(feature_path, 'r')
+        feature = f['feature'][()][:vlength]
+        # feature = np.load(feature_path)
         data[str(vid)]['feature'] = feature
         # label
         label = np.array(labels[str(vid)])[:,:vlength].T
-        label = (label - label.min(0)) / (label.max(0) - label.min(0) + 1e-6)  # 归一化
+        # for s1
+        # label = (label - label.min(0)) / (label.max(0) - label.min(0) + 1e-6)  # 归一化
         data[str(vid)]['label'] = label
         logging.info('Vid: '+str(vid)+' Feature: '+str(feature.shape)+' Label: '+str(label.shape))
     return data
@@ -126,6 +128,7 @@ def load_feature_4fold(feature_base, labe_path, Tags):
 def load_query_summary(query_sum_base):
     # 加载query-focused oracle summary
     summary = {}
+    queries = {}  # 与label_s2中的query顺序一致
     for i in range(1,5):
         summary[str(i)] = {}
         summary_dir = query_sum_base + 'P0%d/' % i
@@ -138,7 +141,12 @@ def load_query_summary(query_sum_base):
                     for line in f.readlines():
                         hl_shots.append(int(line.strip())-1)
                 summary[str(i)]['_'.join(concepts)] = hl_shots
-    return summary
+        query_list = []
+        for query in summary[str(i)]:
+            query_list.append(query.split('_'))
+        query_list.sort(key=lambda x: (x[0], x[1]))
+        queries[str(i)] = query_list
+    return queries, summary
 
 def load_concept(dict_path, txt_emb_path, img_emb_dir):
     # 加载concept的字典、文本嵌入以及图像嵌入
@@ -195,7 +203,7 @@ def get_batch_train(data_train, train_scheme, step, gpu_num, bc, seq_len):
         features.append(data_train[str(vid)]['feature'][seq_start:seq_end])
         labels.append(data_train[str(vid)]['label'][seq_start:seq_end])
     features = np.array(features).reshape((batch_num, seq_len, D_FEATURE))
-    labels = np.array(labels).reshape((batch_num, seq_len, CONCEPT_NUM))
+    labels = np.array(labels).reshape((batch_num, seq_len, D_OUTPUT))
     scores = np.ones((batch_num, seq_len))  # 用于标记padding部分
     return features, labels, scores
 
@@ -227,7 +235,7 @@ def get_batch_test(data_test, test_scheme, step, gpu_num, bc, seq_len):
         score = np.ones(len(label))
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_FEATURE))
-            label_pad = np.zeros((padding_len, CONCEPT_NUM))
+            label_pad = np.zeros((padding_len, D_OUTPUT))
             score_pad = np.zeros(padding_len)
             feature = np.vstack((feature, feature_pad))
             label = np.vstack((label, label_pad))
@@ -236,7 +244,7 @@ def get_batch_test(data_test, test_scheme, step, gpu_num, bc, seq_len):
         labels.append(label)
         scores.append(score)
     features = np.array(features).reshape((batch_num, seq_len, D_FEATURE))
-    labels = np.array(labels).reshape((batch_num, seq_len, CONCEPT_NUM))
+    labels = np.array(labels).reshape((batch_num, seq_len, D_OUTPUT))
     scores = np.array(scores).reshape((batch_num, seq_len))
     return features, labels, scores
 
@@ -308,7 +316,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
             sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
     return sim_mat
 
-def evaluation(pred_scores, query_summary, Tags, test_vids, concepts):
+def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     # 从每个视频的预测结果中，根据query中包含的concept选出相关程度最高的一组shot，匹配后计算f1，求所有query的平均结果
     preds_c = pred_scores[0]
     for i in range(1, len(pred_scores)):
@@ -326,9 +334,13 @@ def evaluation(pred_scores, query_summary, Tags, test_vids, concepts):
         for query in summary:
             shots_gt = summary[query]
             c1, c2 = query.split('_')
-            ind1 = concepts.index(c1)
-            ind2 = concepts.index(c2)
-            scores = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
+            # # for s1
+            # ind1 = concepts.index(c1)
+            # ind2 = concepts.index(c2)
+            # scores = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
+            # for s2
+            index = queries[str(vid)].index([c1, c2])
+            scores = predictions[:, index].reshape((-1))
             shots_pred = np.argsort(scores)[-hl_num:]
             shots_pred.sort()
             # compute
@@ -345,7 +357,7 @@ def evaluation(pred_scores, query_summary, Tags, test_vids, concepts):
     F1_values = np.array(F1_values)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def run_training(data_train, data_test, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
+def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
     max_f1 = MAX_F1
@@ -354,7 +366,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
         global_step = tf.train.get_or_create_global_step()
         # placeholders
         features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_FEATURE))
-        labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, CONCEPT_NUM))
+        labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_OUTPUT))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + CONCEPT_NUM))
         scores_tgt_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
         txt_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_TXT_EMB))
@@ -477,8 +489,8 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                                                                         dropout_holder: hp.dropout,
                                                                         training_holder: False})
                     for preds in logits_temp_list:
-                        pred_scores.append(preds.reshape((-1, CONCEPT_NUM)))
-                p, r, f = evaluation(pred_scores, query_summary, Tags, test_vids, concepts)
+                        pred_scores.append(preds.reshape((-1, D_OUTPUT)))
+                p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
                 random.shuffle(train_scheme)
 
@@ -518,7 +530,7 @@ def main(self):
     # load data
     Tags = load_Tags(TAGS_PATH)
     data = load_feature_4fold(FEATURE_BASE, LABEL_PATH, Tags)
-    query_summary = load_query_summary(QUERY_SUM_BASE)
+    queries, query_summary = load_query_summary(QUERY_SUM_BASE)
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
     # # split data
@@ -586,7 +598,7 @@ def main(self):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
-            run_training(data_train, data_valid, query_summary, Tags, concepts, concept_embedding, model_save_dir, 0)
+            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding, model_save_dir, 0)
             logging.info('*' * 60)
         logging.info('^' * 60 + '\n')
 
