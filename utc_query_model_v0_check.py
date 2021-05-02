@@ -39,6 +39,7 @@ class Path:
     parser.add_argument('--repeat',default=1,type=int)
     parser.add_argument('--dataset',default='utc',type=str)
     parser.add_argument('--observe', default=0, type=int)
+    parser.add_argument('--eval_epoch', default=3, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -102,7 +103,7 @@ class NpEncoder(json.JSONEncoder):
 
 if hp.server == 0:
     # path for USTC server
-    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/i3d_features/'
     LABEL_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
@@ -112,7 +113,7 @@ if hp.server == 0:
     ckpt_model_path = r'/public/data1/users/hulinkang/model_HL_v4/utc_SA/'
 else:
     # path for USTC servers
-    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/i3d_features/'
     LABEL_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Global_Summaries/'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     EMBEDDING_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'

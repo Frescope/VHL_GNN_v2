@@ -61,9 +61,9 @@ PRESTEPS = 0
 
 if hp.server == 0:
     # path for JD server
-    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/i3d_features/'
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
-    LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s2.json'
+    LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s1.json'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     CONCEPT_DICT_PATH = r'/public/data1/users/hulinkang/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
@@ -72,9 +72,9 @@ if hp.server == 0:
     CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
 else:
     # path for USTC servers
-    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/i3d_features/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
-    LABEL_PATH = r'/data/linkang/VHL_GNN/utc/videotrans_label_s2.json'
+    LABEL_PATH = r'/data/linkang/VHL_GNN/utc/videotrans_label_s1.json'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     CONCEPT_DICT_PATH = r'/data/linkang/VHL_GNN/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
@@ -120,7 +120,7 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         # label
         label = np.array(labels[str(vid)])[:,:vlength].T
         # for s1
-        # label = (label - label.min(0)) / (label.max(0) - label.min(0) + 1e-6)  # 归一化
+        label = (label - label.min(0)) / (label.max(0) - label.min(0) + 1e-6)  # 归一化
         data[str(vid)]['label'] = label
         logging.info('Vid: '+str(vid)+' Feature: '+str(feature.shape)+' Label: '+str(label.shape))
     return data
@@ -334,13 +334,15 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
         for query in summary:
             shots_gt = summary[query]
             c1, c2 = query.split('_')
-            # # for s1
-            # ind1 = concepts.index(c1)
-            # ind2 = concepts.index(c2)
-            # scores = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
-            # for s2
-            index = queries[str(vid)].index([c1, c2])
-            scores = predictions[:, index].reshape((-1))
+
+            # for s1
+            ind1 = concepts.index(c1)
+            ind2 = concepts.index(c2)
+            scores = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
+            # # for s2
+            # index = queries[str(vid)].index([c1, c2])
+            # scores = predictions[:, index].reshape((-1))
+
             shots_pred = np.argsort(scores)[-hl_num:]
             shots_pred.sort()
             # compute
