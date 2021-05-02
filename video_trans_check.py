@@ -61,7 +61,7 @@ PRESTEPS = 0
 
 if hp.server == 0:
     # path for JD server
-    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/i3d_features/'
+    FEATURE_BASE = r'/public/data1/users/hulinkang/utc/features/'
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
     LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s1.json'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
@@ -72,7 +72,7 @@ if hp.server == 0:
     CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
 else:
     # path for USTC servers
-    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/i3d_features/'
+    FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
     LABEL_PATH = r'/data/linkang/VHL_GNN/utc/videotrans_label_s1.json'
     QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
