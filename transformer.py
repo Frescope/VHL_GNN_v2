@@ -154,24 +154,24 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
                 block_outputs.append(enc)
         memory = enc
 
-        # block_outputs = tf.concat(block_outputs, axis=0)
-        # [bc,seq,d] = memory.get_shape().as_list()
-        # block_outputs = tf.reshape(block_outputs, shape=[hp.num_blocks, bc, seq, d])
-        # block_outputs = tf.transpose(block_outputs, perm=[1,2,0,3])  # bc*seq*blocknum*d
-        # block_outputs = tf.reshape(block_outputs, shape=[bc*seq, hp.num_blocks, d])  # (bc*seq)*blocknum*d
-        # block_mask = tf.math.equal(tf.convert_to_tensor(np.ones([bc*seq, hp.num_blocks])), 0)
-        # block_agg = multihead_attention(queries=block_outputs,
-        #                                 keys=block_outputs,
-        #                                 values=block_outputs,
-        #                                 key_masks=block_mask,
-        #                                 num_heads=4,
-        #                                 dropout_rate=0,
-        #                                 training=training,
-        #                                 causality=False)
-        # block_agg = ff(block_agg, num_units=[D_FF, D_MODEL], dropout_rate=0)
-        # block_agg = tf.reduce_mean(block_agg, axis=1)  # (bc*seq)*d
-        # block_agg = tf.reshape(block_agg, shape=[bc, seq, d])
-        # memory = block_agg
+        block_outputs = tf.concat(block_outputs, axis=0)
+        [bc,seq,d] = memory.get_shape().as_list()
+        block_outputs = tf.reshape(block_outputs, shape=[hp.num_blocks, bc, seq, d])
+        block_outputs = tf.transpose(block_outputs, perm=[1,2,0,3])  # bc*seq*blocknum*d
+        block_outputs = tf.reshape(block_outputs, shape=[bc*seq, hp.num_blocks, d])  # (bc*seq)*blocknum*d
+        block_mask = tf.math.equal(tf.convert_to_tensor(np.ones([bc*seq, hp.num_blocks])), 0)
+        block_agg = multihead_attention(queries=block_outputs,
+                                        keys=block_outputs,
+                                        values=block_outputs,
+                                        key_masks=block_mask,
+                                        num_heads=4,
+                                        dropout_rate=0,
+                                        training=training,
+                                        causality=False)
+        block_agg = ff(block_agg, num_units=[D_FF, D_MODEL], dropout_rate=0)
+        block_agg = tf.reduce_mean(block_agg, axis=1)  # (bc*seq)*d
+        block_agg = tf.reshape(block_agg, shape=[bc, seq, d])
+        memory = block_agg
 
         return memory
 
