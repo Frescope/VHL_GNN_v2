@@ -10,7 +10,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from transformer import transformer
+from Test_video_trans_i3d_transformer import transformer
 import networkx as nx
 
 class Path:
