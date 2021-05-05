@@ -568,7 +568,7 @@ def main(self):
     #     run_training(data_valid, data_valid, query_summary, Tags, concepts, concept_embedding, model_save_dir, 0)
     #     logging.info('*' * 60)
 
-
+    random.shuffle(concepts)
     # evaluate all videos in turn
     model_scores = {}
     for kfold in range(4):
