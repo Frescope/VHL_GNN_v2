@@ -171,6 +171,7 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
         block_outputs = tf.reshape(block_outputs, shape=[hp.num_blocks, bc, seq, d])
         block_outputs = tf.transpose(block_outputs, perm=[1,2,0,3])  # bc*seq*blocknum*d
         block_outputs = tf.reshape(block_outputs, shape=[bc*seq, hp.num_blocks, d])  # (bc*seq)*blocknum*d
+        block_outputs += positional_embedding(block_outputs, hp.num_blocks, scope='block_positional_embedding')
         block_mask = tf.math.equal(tf.convert_to_tensor(np.ones([bc*seq, hp.num_blocks])), 0)
         block_agg = multihead_attention(queries=block_outputs,
                                         keys=block_outputs,
@@ -223,7 +224,7 @@ def transformer(features, labels, scores_src, scores_tgt, txt_emb, img_emb, drop
         visual_nodes = tf.layers.dense(features, D_MODEL, use_bias=True, activation=None)
         # decoder_input = tf.layers.dense(labels, D_MODEL, use_bias=True, activation=None)
 
-        visual_nodes += positional_encoding(visual_nodes, hp.seq_len)
+        visual_nodes += positional_embedding(visual_nodes, hp.seq_len)
         # decoder_input += positional_encoding(decoder_input, hp.seq_len)
         input_nodes = tf.concat([visual_nodes, image_nodes], axis=1)
 

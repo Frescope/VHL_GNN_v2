@@ -12,12 +12,12 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from transformer import transformer
+from Test_video_trans_posemb_transformer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='3',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=30,type=int)
