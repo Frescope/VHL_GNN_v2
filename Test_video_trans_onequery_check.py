@@ -354,11 +354,12 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     for i in range(len(test_vids)):
         vid, query, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * 0.02)
+        # hl_num = math.ceil(vlength * 0.02)
         predictions = preds_c[pos : pos + vlength]
         pos += vlength
 
         shots_gt = summary[query]
+        hl_num = len(shots_gt)
 
         # for s1
         scores = np.mean(predictions, axis=1)
