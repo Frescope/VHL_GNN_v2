@@ -371,24 +371,24 @@ def model_search(model_save_dir, observe):
                 model_name = file.split('.meta')[0]
                 model_to_restore.append(os.path.join(root, model_name))
     model_to_restore = list(set(model_to_restore))
-    model_to_restore.sort(key=takestep)
-
-    if observe == 0:
-        # 只取最高F1的模型
-        model_kfold = []
-        f1s = []
-        for name in model_to_restore:
-            f1 = name.split('-')[-1]
-            if f1.startswith('F'):
-                f1s.append(float(f1.split('F')[-1]))
-        if len(f1s) == 0:
-            return []  # 没有合格的模型
-        f1_max = np.array(f1s).max()
-        for name in model_to_restore:
-            f1 = name.split('-')[-1]
-            if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
-                model_kfold.append(name)
-        model_to_restore = model_kfold
+    # model_to_restore.sort(key=takestep)
+    #
+    # if observe == 0:
+    #     # 只取最高F1的模型
+    #     model_kfold = []
+    #     f1s = []
+    #     for name in model_to_restore:
+    #         f1 = name.split('-')[-1]
+    #         if f1.startswith('F'):
+    #             f1s.append(float(f1.split('F')[-1]))
+    #     if len(f1s) == 0:
+    #         return []  # 没有合格的模型
+    #     f1_max = np.array(f1s).max()
+    #     for name in model_to_restore:
+    #         f1 = name.split('-')[-1]
+    #         if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
+    #             model_kfold.append(name)
+    #     model_to_restore = model_kfold
 
     return model_to_restore
 

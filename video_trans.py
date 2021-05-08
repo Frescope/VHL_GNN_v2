@@ -17,7 +17,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='3',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=30,type=int)
@@ -502,7 +502,9 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
                     if f > max_f1:
                         max_f1 = f
-                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
+                        model_path = model_save_dir + 'Model'
+                    elif f == max_f1:
+                        model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
                     saver_overall.save(sess, model_path)
                     logging.info('Model Saved: ' + model_path + '\n')
 
