@@ -33,6 +33,7 @@ class Path:
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch', default=1, type=int)
     parser.add_argument('--concept_lambda', default=0.1, type=float)
+    parser.add_argument('--min_train_step', default=10000, type=int)
 
 hparams = Path()
 parser = hparams.parser

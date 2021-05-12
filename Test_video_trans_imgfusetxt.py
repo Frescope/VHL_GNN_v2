@@ -33,6 +33,7 @@ class Path:
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--eval_epoch',default=1,type=int)
     parser.add_argument('--concept_lambda', default=0.1, type=float)
+    parser.add_argument('--min_train_step', default=10000, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -465,6 +466,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
             epoch = step / epoch_step
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
                 if step == 0 and test_mode == 0:
+                    continue
+                if step < hp.min_train_step:
                     continue
                 duration = time.time() - timepoint
                 timepoint = time.time()
