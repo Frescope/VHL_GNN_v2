@@ -1,5 +1,3 @@
-# 实验9，模仿seq2seq方法将视频特征序列变为concept序列，使用encoder-decoder结构预测每个shot与各个concept的相关性
-# 在encoder中将concept的嵌入表征与shot表征共同作为节点输入，将shot对应的表征作为decoder的输入
 import os
 import time
 import numpy as np
@@ -12,12 +10,12 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from transformer import transformer
+from Test.Test_video_trans_onequery_transormer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=30,type=int)
@@ -27,12 +25,13 @@ class Path:
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--lr_noam', default=1e-6, type=float)
-    parser.add_argument('--warmup', default=1500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
+    parser.add_argument('--warmup', default=100, type=int)
+    parser.add_argument('--maxstep', default=500, type=int)
     parser.add_argument('--multimask',default=0, type=int)
     # parser.add_argument('--kfold',default=0,type=int)
-    parser.add_argument('--repeat',default=3,type=int)
-    parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--repeat',default=1,type=int)
+    parser.add_argument('--observe', default=0, type=int)
+    parser.add_argument('--eval_epoch', default=1, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -51,12 +50,12 @@ D_FEATURE = 2048  # for resnet
 # D_FEATURE= 600  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
-D_OUTPUT = 48  # label_S1对应48，label_S2对应45
-CONCEPT_NUM = 48
+D_OUTPUT = 2  # 每次只预测两个concept，仍使用s1标签
+CONCEPT_NUM = 2
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold
 
-LOAD_CKPT_MODEL = False
+LOAD_CKPT_MODEL = True
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -180,73 +179,100 @@ def load_concept(dict_path, txt_emb_path, img_emb_dir):
         concept_embedding[key]['img'] = img_embedding[img_key]
     return concepts, concept_embedding
 
-def train_scheme_build(data_train, seq_len):
-    # 将视频切分为相互有重叠的多个序列，包括数据与标签的索引，getbatch时获取相应的数据和标签，序列打乱顺序训练
-    # 由于每次都会输入全部的concept—embedding，因此在getbatch时不需要额外考虑
+def train_scheme_build(data_train, query_summary, seq_len):
+    # 对于每个vid下的每个query，将视频拆分为多个有重叠的片段，
     seq_list = []
     for vid in data_train:
         vlength = len(data_train[str(vid)]['label'])
-        for i in range(vlength - seq_len + 1):
-            seq_list.append((vid, i, i+seq_len))
+        for query in query_summary[vid]:
+            i = 0
+            while i < vlength - seq_len + 1:
+                seq_list.append((vid, query, i, i + seq_len))
+                i += 5
     random.shuffle(seq_list)
     return seq_list
 
-def get_batch_train(data_train, train_scheme, step, gpu_num, bc, seq_len):
+def get_batch_train(data_train, concepts, concept_embedding, train_scheme, step, gpu_num, bc, seq_len):
     # 从train_scheme中根据step获取gpu_num*bc个序列，每个长度为seq_len
+    # 每个输入序列对应一个query，因而在序列后添加两个concept，对应两个concept的标签，
+    # 从序列表明的query中分解出两个concept，找到它们的索引，然后从label中获取对应长度的片段，并获取两个concept对应的嵌入
     # 不需要做padding
     batch_num = gpu_num * bc
     features = []
     labels = []
+    img_embs = []
     for i in range(batch_num):
         pos = (step * batch_num + i) % len(train_scheme)
-        vid, seq_start, seq_end = train_scheme[pos]
+        vid, query, seq_start, seq_end = train_scheme[pos]
+        c_list = query.split('_')
+        label_temp = []
+        img_embs_temp = []
+        for c in c_list:
+            ind = concepts.index(c)
+            label_temp.append(data_train[str(vid)]['label'][seq_start:seq_end, ind])
+            img_embs_temp.append(concept_embedding[c]['img'])
         features.append(data_train[str(vid)]['feature'][seq_start:seq_end])
-        labels.append(data_train[str(vid)]['label'][seq_start:seq_end])
-    features = np.array(features).reshape((batch_num, seq_len, D_FEATURE))
-    labels = np.array(labels).reshape((batch_num, seq_len, D_OUTPUT))
+        labels.append(label_temp)
+        img_embs.append(img_embs_temp)
+    features = np.array(features)
+    labels = np.array(labels)  # batch_num*D_OUTPUT*seq_len
+    labels = np.transpose(labels, (0,2,1))  # batch_num*seq_len*D_OUTPUT
+    img_embs = np.array(img_embs)
     scores = np.ones((batch_num, seq_len))  # 用于标记padding部分
-    return features, labels, scores
+    return features, labels, img_embs, scores
 
-def test_scheme_build(data_test, seq_len):
+def test_scheme_build(data_test, query_summary, seq_len):
     # 依次输入测试集中的所有shot，不足seqlen的要补足，在getbatch中补足不够一个batch的部分
     seq_list = []
     test_vids = []
     for vid in data_test:
         vlength = len(data_test[str(vid)]['label'])
         seq_num = math.ceil(vlength / seq_len)
-        for i in range(seq_num):
-            seq_list.append((vid, i * seq_len, min(vlength,(i+1) * seq_len)))
-        test_vids.append((vid, vlength))
+        for query in query_summary[vid]:
+            for i in range(seq_num):
+                seq_list.append((vid, query, i * seq_len, min(vlength,(i+1) * seq_len)))
+            test_vids.append((vid, query, vlength))
     return seq_list, test_vids
 
-def get_batch_test(data_test, test_scheme, step, gpu_num, bc, seq_len):
+def get_batch_test(data_test, concepts, concept_embedding, test_scheme, step, gpu_num, bc, seq_len):
     # 标记每个序列中的有效长度，并对不足一个batch的部分做padding
     # 不需要对序列水平上的padding做标记
     features = []
     labels = []
     scores = []
+    img_embs = []
     batch_num = gpu_num * bc
     for i in range(batch_num):
         pos = (step * batch_num + i) % len(test_scheme)
-        vid, seq_start, seq_end = test_scheme[pos]
+        vid, query, seq_start, seq_end = test_scheme[pos]
         padding_len = seq_len - (seq_end - seq_start)
+        c_list = query.split('_')
+        label_temp = []
+        img_embs_temp = []
+        for c in c_list:
+            ind = concepts.index(c)
+            label_temp.append(data_test[str(vid)]['label'][seq_start:seq_end, ind])
+            img_embs_temp.append(concept_embedding[c]['img'])
+        label_temp = np.array(label_temp)
+        label_temp = np.transpose(label_temp, (1,0))
         feature = data_test[str(vid)]['feature'][seq_start:seq_end]
-        label = data_test[str(vid)]['label'][seq_start:seq_end]
-        score = np.ones(len(label))
+        score = np.ones(len(label_temp))
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_FEATURE))
             label_pad = np.zeros((padding_len, D_OUTPUT))
             score_pad = np.zeros(padding_len)
             feature = np.vstack((feature, feature_pad))
-            label = np.vstack((label, label_pad))
+            label_temp = np.vstack((label_temp, label_pad))
             score = np.hstack((score, score_pad))
         features.append(feature)
-        labels.append(label)
+        labels.append(label_temp)
+        img_embs.append(img_embs_temp)
         scores.append(score)
     features = np.array(features).reshape((batch_num, seq_len, D_FEATURE))
     labels = np.array(labels).reshape((batch_num, seq_len, D_OUTPUT))
+    img_embs = np.array(img_embs).reshape((batch_num, CONCEPT_NUM, D_IMG_EMB))
     scores = np.array(scores).reshape((batch_num, seq_len))
-    return features, labels, scores
+    return features, labels, img_embs, scores
 
 def _variable_on_cpu(name, shape, initializer):
     with tf.device('/cpu:0'):
@@ -326,44 +352,70 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     REC_values = []
     F1_values = []
     for i in range(len(test_vids)):
-        vid, vlength = test_vids[i]
+        vid, query, vlength = test_vids[i]
         summary = query_summary[str(vid)]
         hl_num = math.ceil(vlength * 0.02)
         predictions = preds_c[pos : pos + vlength]
         pos += vlength
-        for query in summary:
-            shots_gt = summary[query]
-            c1, c2 = query.split('_')
 
-            # for s1
-            ind1 = concepts.index(c1)
-            ind2 = concepts.index(c2)
-            scores = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
-            # # for s2
-            # index = queries[str(vid)].index([c1, c2])
-            # scores = predictions[:, index].reshape((-1))
+        shots_gt = summary[query]
+        # hl_num = len(shots_gt)
 
-            shots_pred = np.argsort(scores)[-hl_num:]
-            shots_pred.sort()
-            # compute
-            sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
-            weight = shot_matching(sim_mat)
-            precision = weight / len(shots_pred)
-            recall = weight / len(shots_gt)
-            f1 = 2 * precision * recall / (precision + recall)
-            PRE_values.append(precision)
-            REC_values.append(recall)
-            F1_values.append(f1)
+        # for s1
+        scores = np.mean(predictions, axis=1)
+        # # for s2
+        # scores = predictions.reshape((-1))
+
+        shots_pred = np.argsort(scores)[-hl_num:]
+        shots_pred.sort()
+        # compute
+        sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+        weight = shot_matching(sim_mat)
+        precision = weight / len(shots_pred)
+        recall = weight / len(shots_gt)
+        f1 = 2 * precision * recall / (precision + recall)
+        PRE_values.append(precision)
+        REC_values.append(recall)
+        F1_values.append(f1)
+
     PRE_values = np.array(PRE_values)
     REC_values = np.array(REC_values)
     F1_values = np.array(F1_values)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    max_f1 = MAX_F1
+def model_search(model_save_dir, observe):
+    def takestep(name):
+        return int(name.split('-')[0].split('S')[-1])
+    # 找到要验证的模型名称
+    model_to_restore = []
+    for root,dirs,files in os.walk(model_save_dir):
+        for file in files:
+            if file.endswith('.meta'):
+                model_name = file.split('.meta')[0]
+                model_to_restore.append(os.path.join(root, model_name))
+    model_to_restore = list(set(model_to_restore))
+    model_to_restore.sort(key=takestep)
 
+    if observe == 0:
+        # 只取最高F1的模型
+        model_kfold = []
+        f1s = []
+        for name in model_to_restore:
+            f1 = name.split('-')[-1]
+            if f1.startswith('F'):
+                f1s.append(float(f1.split('F')[-1]))
+        if len(f1s) == 0:
+            return []  # 没有合格的模型
+        f1_max = np.array(f1s).max()
+        for name in model_to_restore:
+            f1 = name.split('-')[-1]
+            if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
+                model_kfold.append(name)
+        model_to_restore = model_kfold
+
+    return model_to_restore
+
+def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, model_path):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -405,10 +457,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
                 tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
-        grads_t = average_gradients(tower_grads_train)
-        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
-        if test_mode == 1:
-            train_op = tf.no_op()
+        train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -420,32 +469,23 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
-            saver_overall.restore(sess, CKPT_MODEL_PATH)
+            logging.info(' Ckpt Model Restoring: ' + model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
-        train_scheme = train_scheme_build(data_train, hp.seq_len)
-        test_scheme, test_vids = test_scheme_build(data_test, hp.seq_len)
+        train_scheme = train_scheme_build(data_train, query_summary, hp.seq_len)
+        test_scheme, test_vids = test_scheme_build(data_test, query_summary, hp.seq_len)
         epoch_step = math.ceil(len(train_scheme) / (hp.gpu_num * hp.bc))
         max_test_step = math.ceil(len(test_scheme) / (hp.gpu_num * hp.bc))
-
-        # concept embedding processing
-        txt_emb_b = []
-        img_emb_b = []
-        for c in concepts:
-            txt_emb_b.append(concept_embeeding[c]['txt'])
-            img_emb_b.append(concept_embeeding[c]['img'])
-        txt_emb_b = np.array(txt_emb_b).reshape([1, CONCEPT_NUM, D_TXT_EMB])
-        img_emb_b = np.array(img_emb_b).reshape([1, CONCEPT_NUM, D_IMG_EMB])
-        txt_emb_b = np.tile(txt_emb_b, [hp.gpu_num * hp.bc, 1, 1])  # (bc*gpu_num)*48*d_txt
-        img_emb_b = np.tile(img_emb_b, [hp.gpu_num * hp.bc, 1, 1])
 
         # begin training
         ob_loss = []
         timepoint = time.time()
         for step in range(hp.maxstep):
-            features_b, labels_b, scores_b = get_batch_train(data_train, train_scheme, step, hp.gpu_num, hp.bc, hp.seq_len)
+            features_b, labels_b, img_emb_b, scores_b = get_batch_train(data_train, concepts, concept_embedding,
+                                                                        train_scheme, step, hp.gpu_num, hp.bc,
+                                                                        hp.seq_len)
             scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
             scores_tgt_b = scores_b
             observe = sess.run([train_op] + loss_list + logits_list + [global_step, lr],
@@ -453,7 +493,6 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                                           labels_holder: labels_b,
                                           scores_src_holder: scores_src_b,
                                           scores_tgt_holder: scores_tgt_b,
-                                          txt_emb_holder: txt_emb_b,
                                           img_emb_holder: img_emb_b,
                                           dropout_holder: hp.dropout,
                                           training_holder: True})
@@ -463,9 +502,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
 
             # save checkpoint &  evaluate
             epoch = step / epoch_step
-            if step % epoch_step == 0 or (step + 1) == hp.maxstep:
-                if step == 0 and test_mode == 0:
-                    continue
+            if step % epoch_step == 0:
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)
@@ -474,50 +511,28 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                if not int(epoch) % hp.eval_epoch == 0:
-                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
-                    features_b, labels_b, scores_b = get_batch_test(data_test, test_scheme, test_step, hp.gpu_num, hp.bc, hp.seq_len)
-                    scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
+                    features_b, labels_b, img_emb_b, scores_b = get_batch_test(data_test, concepts, concept_embedding,
+                                                                               test_scheme, test_step, hp.gpu_num,
+                                                                               hp.bc, hp.seq_len)
+                    scores_src_b = np.hstack(
+                        (scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
                     scores_tgt_b = scores_b
                     logits_temp_list = sess.run(logits_list, feed_dict={features_holder: features_b,
                                                                         labels_holder: labels_b,
                                                                         scores_src_holder: scores_src_b,
                                                                         scores_tgt_holder: scores_tgt_b,
-                                                                        txt_emb_holder: txt_emb_b,
                                                                         img_emb_holder: img_emb_b,
                                                                         dropout_holder: hp.dropout,
                                                                         training_holder: False})
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
                 p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                random.shuffle(train_scheme)
-
-                if test_mode == 1:
-                    return
-                # save model
-                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
-                    if f > max_f1:
-                        max_f1 = f
-                        model_path = model_save_dir + 'Model'
-                    elif f == max_f1:
-                        model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
-                    saver_overall.save(sess, model_path)
-                    logging.info('Model Saved: ' + model_path + '\n')
-
-            if step % 3000 == 0 and step > 0:
-                model_path = model_save_dir + 'S%d-E%d' % (step + PRESTEPS, epoch)
-                # saver_overall.save(sess, model_path)
-                logging.info('Model Saved: ' + str(step + PRESTEPS))
-
-            # saving final model
-        model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
-        # saver_overall.save(sess, model_path)
-        logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
-
+                logging.info('Precision: %.8f, Recall: %.8f, F1: %.8f' % (p, r, f))
+                return f
+    return 0
 
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
@@ -537,40 +552,8 @@ def main(self):
     queries, query_summary = load_query_summary(QUERY_SUM_BASE)
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
-    # # split data
-    # data_train = {}
-    # data_valid = {}
-    # data_test = {}
-    # data_train[str((hp.kfold + 0) % 4 + 1)] = data[str((hp.kfold + 0) % 4 + 1)]
-    # data_train[str((hp.kfold + 1) % 4 + 1)] = data[str((hp.kfold + 1) % 4 + 1)]
-    # data_valid[str((hp.kfold + 2) % 4 + 1)] = data[str((hp.kfold + 2) % 4 + 1)]
-    # data_test[str((hp.kfold + 3) % 4 + 1)] = data[str((hp.kfold + 3) % 4 + 1)]
-    #
-    # # info
-    # logging.info('*' * 20 + 'Settings' + '*' * 20)
-    # logging.info('K-fold: ' + str(hp.kfold))
-    # logging.info('Valid: %d  Test: %d' % ((hp.kfold + 2) % 4 + 1, (hp.kfold + 3) % 4 + 1))
-    # logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd)
-    # logging.info('WarmUp: ' + str(hp.warmup))
-    # logging.info('Noam LR: ' + str(hp.lr_noam))
-    # logging.info('Num Heads: ' + str(hp.num_heads))
-    # logging.info('Num Blocks: ' + str(hp.num_blocks))
-    # logging.info('Batchsize: ' + str(hp.bc))
-    # logging.info('Max Steps: ' + str(hp.maxstep))
-    # logging.info('Dropout Rate: ' + str(hp.dropout))
-    # logging.info('Sequence Length: ' + str(hp.seq_len))
-    # logging.info('*' * 50 + '\n')
-    #
-    # # repeat
-    # for i in range(hp.repeat):
-    #     model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d/' % i
-    #     logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
-    #     logging.info('*' * 60)
-    #     run_training(data_valid, data_valid, query_summary, Tags, concepts, concept_embedding, model_save_dir, 0)
-    #     logging.info('*' * 60)
-
-
     # evaluate all videos in turn
+    model_scores = {}
     for kfold in range(4):
         # split data
         data_train = {}
@@ -598,15 +581,23 @@ def main(self):
         logging.info('*' * 50)
 
         # repeat
+        scores = []
         for i in range(hp.repeat):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
-            logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding, model_save_dir, 0)
-            logging.info('*' * 60)
-        logging.info('^' * 60 + '\n')
-
-        # break
+            models_to_restore = model_search(model_save_dir, observe=hp.observe)
+            for i in range(len(models_to_restore)):
+                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+                model_path = models_to_restore[i]
+                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, model_path)
+                scores.append(f1)
+        model_scores[str((kfold + 3) % 4 + 1)] = scores
+    scores_all = 0
+    for vid in model_scores:
+        scores = model_scores[vid]
+        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
+                     (vid, np.array(scores).mean(), str(scores)))
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()

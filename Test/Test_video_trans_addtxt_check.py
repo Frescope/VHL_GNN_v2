@@ -1,5 +1,3 @@
-# 实验9，模仿seq2seq方法将视频特征序列变为concept序列，使用encoder-decoder结构预测每个shot与各个concept的相关性
-# 在encoder中将concept的嵌入表征与shot表征共同作为节点输入，将shot对应的表征作为decoder的输入
 import os
 import time
 import numpy as np
@@ -12,12 +10,12 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_video_trans_posemb_transformer import transformer
+from Test.Test_video_trans_addtxt_transformer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=30,type=int)
@@ -27,12 +25,13 @@ class Path:
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--lr_noam', default=1e-6, type=float)
-    parser.add_argument('--warmup', default=1500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
+    parser.add_argument('--warmup', default=100, type=int)
+    parser.add_argument('--maxstep', default=500, type=int)
     parser.add_argument('--multimask',default=0, type=int)
     # parser.add_argument('--kfold',default=0,type=int)
-    parser.add_argument('--repeat',default=3,type=int)
-    parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--repeat',default=1,type=int)
+    parser.add_argument('--observe', default=0, type=int)
+    parser.add_argument('--eval_epoch', default=1, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -53,11 +52,11 @@ D_TXT_EMB = 300
 D_IMG_EMB = 2048
 D_OUTPUT = 48  # label_S1对应48，label_S2对应45
 CONCEPT_NUM = 48
-MAX_F1 = 0.2
+MAX_F1 = 0.25
 GRAD_THRESHOLD = 10.0  # gradient threshold
 
-LOAD_CKPT_MODEL = False
-MIN_TRAIN_STEPS = 0
+LOAD_CKPT_MODEL = True
+MIN_TRAIN_STEPS = 1000
 PRESTEPS = 0
 
 if hp.server == 0:
@@ -103,12 +102,13 @@ def load_Tags(Tags_path):
 
 def load_feature_4fold(feature_base, labe_path, Tags):
     # 注意label对应的concept是按照字典序排列的
-    with open(labe_path, 'r') as file:
+    with open(LABEL_PATH, 'r') as file:
         labels = json.load(file)
     data = {}
     for vid in range(1,5):
         data[str(vid)] = {}
         vlength = len(Tags[vid-1])
+        # feature
         # feature
         feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
         # feature_path = feature_base + 'V%d_C3D.h5' % vid
@@ -359,17 +359,45 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     F1_values = np.array(F1_values)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    max_f1 = MAX_F1
+def model_search(model_save_dir, observe):
+    def takestep(name):
+        return int(name.split('-')[0].split('S')[-1])
+    # 找到要验证的模型名称
+    model_to_restore = []
+    for root,dirs,files in os.walk(model_save_dir):
+        for file in files:
+            if file.endswith('.meta'):
+                model_name = file.split('.meta')[0]
+                model_to_restore.append(os.path.join(root, model_name))
+    model_to_restore = list(set(model_to_restore))
+    model_to_restore.sort(key=takestep)
 
+    if observe == 0:
+        # 只取最高F1的模型
+        model_kfold = []
+        f1s = []
+        for name in model_to_restore:
+            f1 = name.split('-')[-1]
+            if f1.startswith('F'):
+                f1s.append(float(f1.split('F')[-1]))
+        if len(f1s) == 0:
+            return []  # 没有合格的模型
+        f1_max = np.array(f1s).max()
+        for name in model_to_restore:
+            f1 = name.split('-')[-1]
+            if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
+                model_kfold.append(name)
+        model_to_restore = model_kfold
+
+    return model_to_restore
+
+def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
         features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_FEATURE))
         labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_OUTPUT))
-        scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + CONCEPT_NUM))
+        scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + CONCEPT_NUM * 2))
         scores_tgt_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
         txt_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_TXT_EMB))
         img_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_IMG_EMB))
@@ -405,10 +433,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
                 tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
-        grads_t = average_gradients(tower_grads_train)
-        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
-        if test_mode == 1:
-            train_op = tf.no_op()
+        train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -420,8 +445,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
-            saver_overall.restore(sess, CKPT_MODEL_PATH)
+            logging.info(' Ckpt Model Restoring: ' + model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -446,7 +471,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         timepoint = time.time()
         for step in range(hp.maxstep):
             features_b, labels_b, scores_b = get_batch_train(data_train, train_scheme, step, hp.gpu_num, hp.bc, hp.seq_len)
-            scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
+            scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM * 2))))  # encoder中开放所有concept节点
             scores_tgt_b = scores_b
             observe = sess.run([train_op] + loss_list + logits_list + [global_step, lr],
                                feed_dict={features_holder: features_b,
@@ -463,9 +488,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
 
             # save checkpoint &  evaluate
             epoch = step / epoch_step
-            if step % epoch_step == 0 or (step + 1) == hp.maxstep:
-                if step == 0 and test_mode == 0:
-                    continue
+            if step % epoch_step == 0:
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)
@@ -474,13 +497,11 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                if not int(epoch) % hp.eval_epoch == 0:
-                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
                     features_b, labels_b, scores_b = get_batch_test(data_test, test_scheme, test_step, hp.gpu_num, hp.bc, hp.seq_len)
-                    scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
+                    scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM * 2))))  # encoder中开放所有concept节点
                     scores_tgt_b = scores_b
                     logits_temp_list = sess.run(logits_list, feed_dict={features_holder: features_b,
                                                                         labels_holder: labels_b,
@@ -493,29 +514,9 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
                 p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                random.shuffle(train_scheme)
-
-                if test_mode == 1:
-                    return
-                # save model
-                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
-                    if f > max_f1:
-                        max_f1 = f
-                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
-                    saver_overall.save(sess, model_path)
-                    logging.info('Model Saved: ' + model_path + '\n')
-
-            if step % 3000 == 0 and step > 0:
-                model_path = model_save_dir + 'S%d-E%d' % (step + PRESTEPS, epoch)
-                # saver_overall.save(sess, model_path)
-                logging.info('Model Saved: ' + str(step + PRESTEPS))
-
-            # saving final model
-        model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
-        # saver_overall.save(sess, model_path)
-        logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
-
+                logging.info('Precision: %.8f, Recall: %.8f, F1: %.8f' % (p, r, f))
+                return f
+    return 0
 
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
@@ -569,6 +570,7 @@ def main(self):
 
 
     # evaluate all videos in turn
+    model_scores = {}
     for kfold in range(4):
         # split data
         data_train = {}
@@ -596,15 +598,23 @@ def main(self):
         logging.info('*' * 50)
 
         # repeat
+        scores = []
         for i in range(hp.repeat):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
-            logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding, model_save_dir, 0)
-            logging.info('*' * 60)
-        logging.info('^' * 60 + '\n')
-
-        # break
+            models_to_restore = model_search(model_save_dir, observe=hp.observe)
+            for i in range(len(models_to_restore)):
+                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+                model_path = models_to_restore[i]
+                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, model_path)
+                scores.append(f1)
+        model_scores[str((kfold + 3) % 4 + 1)] = scores
+    scores_all = 0
+    for vid in model_scores:
+        scores = model_scores[vid]
+        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
+                     (vid, np.array(scores).mean(), str(scores)))
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()
