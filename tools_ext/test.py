@@ -1,3 +1,11 @@
+"""
+来源：https://github.com/qiuqiangkong/audioset_classification
+Kong, Qiuqiang, Changsong Yu, Yong Xu, Turab Iqbal, Wenwu Wang, and Mark D. Plumbley. "Weakly Labelled AudioSet Tagging With Attention Neural Networks." IEEE/ACM Transactions on Audio, Speech, and Language Processing 27, no. 11 (2019): 1791-1802.
+一种基于音频的Vggish特征进行分类的模型；原文中使用的是来自AudioSet数据集的输入，每个样例均为(10,128)的形式，10为audio_frame数量。
+模型输入的形式是(bs,N,d)，需要对不同长度的输入特征（即N不同）做padding；模型输出(bs,C)C为对输出的类别数；注意bs=1可能会影响模型内做BatchNorm的步骤。
+uint8_to_float32,bool_to_float32为格式转换函数，其余函数均为模型组件，使用FeatureLevelSingleAttention调用模型。
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,20 +23,6 @@ with h5py.File(path, 'r') as hf:
     X = hf['x'][:]
     y = hf['y'][:]
     video_id_list = hf['video_id_list'][:].tolist()
-
-# # Load data
-# # 加载少量样本，随机生成标签
-# train_dir = r'/home/tione/notebook/dataset/tagging/tagging_dataset_train_5k/audio_npy/Vggish/tagging/'
-# CLASS_NUM = 80
-#
-# X = []
-# for root, dirs, files in os.walk(train_dir):
-#     for name in files[0:100]:
-#         feature = np.load(os.path.join(root, name))
-#         X.append(feature)
-#         print(name, feature.shape)
-# y = np.random.random((len(X), CLASS_NUM))
-# print('y: ', y.shape)
 
 def init_layer(layer):
     if layer.weight.ndimension() == 4:
@@ -203,7 +197,7 @@ class FeatureLevelSingleAttention(nn.Module):
         init_bn(self.bn_attention)
 
     def forward(self, input):
-        """input: (samples_num, freq_bins, time_steps, 1)
+        """input: (samples_num, time_steps, freq_bins)
         """
         drop_rate = self.drop_rate
 
@@ -223,16 +217,16 @@ class FeatureLevelSingleAttention(nn.Module):
 
         return output
 
-# training frame
 def uint8_to_float32(x):
     return (np.float32(x) - 128.) / 128.
 
 def bool_to_float32(y):
     return np.float32(y)
 
+# training frame
 def train():
     freq_bins = 128  # Vggish特征长度
-    classes_num = 527
+    classes_num = 527  # AudioSet中共有527个类别
     hidden_units = 1024
     drop_rate = 0.2
     bs = 10
@@ -251,7 +245,7 @@ def train():
         batch_x = X[i * bs : (i+1) * bs]
         batch_y = y[i * bs : (i+1) * bs]
         batch_x = uint8_to_float32(batch_x)  # Vggish特征是uint8格式
-        batch_y = bool_to_float32(batch_y)
+        batch_y = bool_to_float32(batch_y)  # 标签需要转化为浮点形式
 
         batch_x = Variable(torch.Tensor(batch_x).cuda())
         batch_y = Variable(torch.Tensor(batch_y).cuda())
