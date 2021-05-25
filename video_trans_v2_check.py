@@ -506,8 +506,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
-            saver_overall.restore(sess, CKPT_MODEL_PATH)
+            logging.info(' Ckpt Model Restoring: ' + model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -625,7 +625,7 @@ def main(self):
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
-                f1 = run_testing(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
+                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
                                  model_path)
                 scores.append(f1)
         model_scores[str((kfold + 3) % 4 + 1)] = scores
