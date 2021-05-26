@@ -33,7 +33,7 @@ class Path:
     parser.add_argument('--pos_ratio', default=0.1, type=float)
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
-    parser.add_argument('--eval_epoch',default=10,type=int)
+    parser.add_argument('--eval_epoch',default=5,type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -48,8 +48,8 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-D_FEATURE = 2048  # for resnet
-# D_FEATURE= 600  # for I3D
+# D_FEATURE = 2048  # for resnet
+D_FEATURE = 1024  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
 D_OUTPUT = 48  # label_S1对应48，label_S2对应45
@@ -111,12 +111,15 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         data[str(vid)] = {}
         vlength = len(Tags[vid-1])
         # feature
-        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+
+        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
         # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        # feature_path = feature_base + 'V%d_I3D_2.npy' % vid
-        f = h5py.File(feature_path, 'r')
-        feature = f['feature'][()][:vlength]
-        # feature = np.load(feature_path)
+        # f = h5py.File(feature_path, 'r')
+        # feature = f['feature'][()][:vlength]
+
+        feature_path = feature_base + 'V%d_I3D.npy' % vid
+        feature = np.load(feature_path)
+
         data[str(vid)]['feature'] = feature
         # label
         label = np.array(labels[str(vid)])[:,:vlength].T
@@ -182,42 +185,45 @@ def load_concept(dict_path, txt_emb_path, img_emb_dir):
     return concepts, concept_embedding
 
 def train_scheme_build(data_train, seq_len):
-    # 对于每个视频，标记出每个concept对应的正例和负例，所有标签不为零的均视为正例，然后取正例的并集作为正例集合，其余为负例集合
+    # 对于每个视频，标记出每个concept对应的正例和负例，分别为每个concept建立正例与负例集合，每个序列中只在一个concept对应的正例与负例集合中选择，目的是保证每个输入序列只针对一个concept进行训练
     # 每次按照一定比例从正例集合中取若干clip（按顺序），所有正例全部训练一次作为一个epoch，每个epoch后随机化正例与负例集合的顺序
-    # 不同视频的clip混合排列，但是必须保证每个batch中只有来自同一个视频的clip
+    # 不同视频、不同concept的序列混合排列，但是必须保证每个序列中只有来自同一个视频的clip
     info_dict = {}
     for vid in data_train:
         label = data_train[vid]['label']
         info_dict[vid] = {}
-        label_sum = np.sum(label, axis=1)
-        info_dict[vid]['pos_list'] = list(np.where(label_sum > 0)[0])
-        info_dict[vid]['neg_list'] = list(np.where(label_sum == 0)[0])
-        random.shuffle(info_dict[vid]['pos_list'])
-        random.shuffle(info_dict[vid]['neg_list'])
+        for cid in range(CONCEPT_NUM):
+            label_concept = label[:, cid]
+            concept_pos_list = list(np.where(label_concept > 0)[0])
+            concept_neg_list = list(np.where(label_concept == 0)[0])
+            random.shuffle(concept_pos_list)
+            random.shuffle(concept_neg_list)
+            info_dict[vid][str(cid)] = [concept_pos_list, concept_neg_list]
 
     # 按照固定比例选取正例与负例，取完所有正例为止，每个epoch更新一次训练列表
     train_scheme = []
     pos_num = math.ceil(seq_len * hp.pos_ratio)
     for vid in info_dict:
-        pos_list = info_dict[vid]['pos_list']
-        neg_list = info_dict[vid]['neg_list']
-        pos_ind = 0  # pos_list中的位置
-        neg_ind = 0
-        while(pos_ind < len(pos_list)):
-            clip_list = pos_list[pos_ind : pos_ind + pos_num]
-            clip_list += neg_list[neg_ind : neg_ind + seq_len - len(clip_list)]  # 正例不足时用负例补足
-            clip_list += pos_list[0 : seq_len - len(clip_list)]  # 负例不足时做padding，一般不起作用
-            clip_list.sort()
+        for cid in range(CONCEPT_NUM):
+            concept_pos_list, concept_neg_list = info_dict[vid][str(vid)]
+            pos_ind = 0  # pos_list中的位置
+            neg_ind = 0
+            while(pos_ind < len(concept_pos_list)):
+                clip_list = concept_pos_list[pos_ind : pos_ind + pos_num]
+                clip_list += concept_neg_list[neg_ind : neg_ind + seq_len - len(clip_list)]  # 正例不足时用负例补足
+                clip_list += concept_pos_list[0 : seq_len - len(clip_list)]  # 负例不足时做padding，一般不起作用
+                clip_list.sort()
 
-            # # test
-            # label_temp = np.sum(data_train[vid]['label'], axis=1)[clip_list]
-            # pl = np.where(label_temp > 0)[0]
-            # nl = np.where(label_temp == 0)[0]
-            # print(vid,pos_ind, 'pos: ',len(pl), pos_ind, 'neg: ',len(nl), neg_ind)
+                # # test
+                # label_temp = np.sum(data_train[vid]['label'], axis=1)[clip_list]
+                # pl = np.where(label_temp > 0)[0]
+                # nl = np.where(label_temp == 0)[0]
+                # print(vid,pos_ind, 'pos: ',len(pl), pos_ind, 'neg: ',len(nl), neg_ind)
 
-            pos_ind += pos_num
-            neg_ind = (neg_ind + seq_len - pos_num) % len(neg_list)  # 循环取负例
-            train_scheme.append((vid, clip_list))
+                pos_ind += pos_num
+                neg_ind = (neg_ind + seq_len - pos_num) % len(concept_neg_list)  # 循环取负例
+                train_scheme.append((vid, cid, clip_list))
+    random.shuffle(train_scheme)
     return train_scheme
 
 def get_batch_train(data_train, train_scheme, step, gpu_num, bc, seq_len):
@@ -228,7 +234,7 @@ def get_batch_train(data_train, train_scheme, step, gpu_num, bc, seq_len):
     positions = []
     for i in range(batch_num):
         pos = (step * batch_num + i) % len(train_scheme)
-        vid, clip_list = train_scheme[pos]
+        vid, cid, clip_list = train_scheme[pos]
         features.append(data_train[vid]['feature'][clip_list])
         labels.append(data_train[vid]['label'][clip_list])
         positions.append(clip_list)

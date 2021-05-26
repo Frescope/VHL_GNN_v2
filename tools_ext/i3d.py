@@ -470,10 +470,11 @@ class InceptionI3d(snt.AbstractModule):
       if self._spatial_squeeze:
         logits = tf.squeeze(logits, [2, 3], name='SpatialSqueeze')
     averaged_logits = tf.reduce_mean(logits, axis=1)
-    end_points[end_point] = averaged_logits
+    # end_points[end_point] = averaged_logits
+    end_points[end_point] = tf.reduce_mean(tf.squeeze(net, [2,3]), axis=1)
     if self._final_endpoint == end_point: return averaged_logits, end_points
 
-    end_point = 'Predictions'
+    end_point = 'Predictions'  
     predictions = tf.nn.softmax(averaged_logits)
     end_points[end_point] = predictions
     return predictions, end_points

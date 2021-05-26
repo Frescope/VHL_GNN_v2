@@ -12,11 +12,14 @@ import numpy as np
 DATA_DIR = r'/data/linkang/VHL_GNN/utc_feature_i3d_3fps/'
 FEATURE_DIR = r'/data/linkang/VHL_GNN/utc/i3d_features/'
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '8'
+os.environ["CUDA_VISIBLE_DEVICES"] = '7'
+tf.logging.set_verbosity(tf.logging.ERROR)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 _IMAGE_SIZE = 224
 _SAMPLE_VIDEO_FRAMES = 15
-NUM_CLASSES = 600
-BATCH_SIZE = 20
+NUM_CLASSES = 400
+BATCH_SIZE = 1
 
 SHOTS_NUMS = [2783, 3692, 2152, 3588]
 
@@ -38,9 +41,9 @@ def getBatch(feature, step, bc):
         feature_b = np.vstack((feature_b, feature_pad))
     return  feature_b
 
-def run(rgb_data):
+def run(data):
     tf.logging.set_verbosity(tf.logging.INFO)
-    eval_type = 'rgb600'
+    eval_type = 'rgb_imagenet'
 
     rgb_input = tf.placeholder(
         tf.float32,
@@ -48,51 +51,52 @@ def run(rgb_data):
     with tf.variable_scope('RGB'):
         rgb_model = i3d.InceptionI3d(
             NUM_CLASSES, spatial_squeeze=True, final_endpoint='Logits')
-        rgb_logits, _ = rgb_model(
+        _, end_points = rgb_model(
             rgb_input, is_training=False, dropout_keep_prob=1.0)
+        rgb_logits = end_points['Logits']
     rgb_variable_map = {}
     for variable in tf.global_variables():
         if variable.name.split('/')[0] == 'RGB':
-            # rgb_variable_map[variable.name.replace(':0', '')] = variable
-            rgb_variable_map[variable.name.replace(':0', '')[len('RGB/inception_i3d/'):]] = variable
+            rgb_variable_map[variable.name.replace(':0', '')] = variable
+            # rgb_variable_map[variable.name.replace(':0', '')[len('RGB/inception_i3d/'):]] = variable
     rgb_saver = tf.train.Saver(var_list=rgb_variable_map, reshape=True)
 
     with tf.Session() as sess:
-        feed_dict = {}
         rgb_saver.restore(sess, _CHECKPOINT_PATHS[eval_type])
         tf.logging.info('RGB checkpoint restored')
-        tf.logging.info('RGB data loaded, shape=%s', str(len(rgb_data)))
+        features = {}
+        for vid in data:
+            feed_dict = {}
+            rgb_data = data[vid]
+            tf.logging.info('RGB data loaded, shape=%s', str(len(rgb_data)))
 
-        max_step = math.ceil(len(rgb_data) / BATCH_SIZE)
-        i3d_features = []
-        for step in range(max_step):
-            feature_batch = getBatch(rgb_data,step,BATCH_SIZE)
-            feed_dict[rgb_input] = feature_batch
-            out_logits = sess.run(rgb_logits, feed_dict=feed_dict)
-            # print(step, out_logits.shape)
-            i3d_features.append(out_logits)
-        i3d_features = np.array(i3d_features).reshape((-1, NUM_CLASSES))
-        return i3d_features
+            max_step = math.ceil(len(rgb_data) / BATCH_SIZE)
+            i3d_features = []
+            for step in range(max_step):
+                feature_batch = getBatch(rgb_data,step,BATCH_SIZE)
+                feed_dict[rgb_input] = feature_batch
+                out_logits = sess.run(rgb_logits, feed_dict=feed_dict)
+                # print(step, out_logits.shape)
+                i3d_features.append(out_logits)
+            i3d_features = np.array(i3d_features).reshape((-1, 1024))
+            features[vid] = i3d_features
+        return features
 
 def main(self):
-    # if not os.path.isdir(FEATURE_DIR):
-    #     os.makedirs(FEATURE_DIR)
-    # for i in range(4, 5):
-    #     print('*' * 20, 'Vid: P0%d' % i, '*' * 20)
-    #     data_path = DATA_DIR + 'P0%d_i3d_3fps.npy' % i
-    #     feature_path = FEATURE_DIR + 'V%d_I3D.npy' % i
-    #     rgb_data = np.load(data_path)
-    #     features = run(rgb_data)
-    #     np.save(feature_path, features[: len(rgb_data)])
-    #     print('Extracted: ', features.shape)
-
-    # temp
+    if not os.path.isdir(FEATURE_DIR):
+        os.makedirs(FEATURE_DIR)
+    data = {}
     for i in range(1, 5):
-        feature_path = FEATURE_DIR + 'V%d_I3D.npy' % i
-        feature = np.load(feature_path)
-        feature = feature[: SHOTS_NUMS[i - 1]]
-        print(feature.shape)
-        np.save(FEATURE_DIR + 'V%d_I3D_2.npy' % i, feature)
+        data_path = DATA_DIR + 'P0%d_i3d_3fps.npy' % i
+        rgb_data = np.load(data_path)
+        print('Vid %d: ' % i, rgb_data.shape)
+        data[str(i)] = rgb_data
+    features = run(data)
+    for vid in features:
+        print('*' * 20, 'Vid: P0%d' % i, '*' * 20)
+        feature_path = FEATURE_DIR + 'V%s_I3D.npy' % vid
+        np.save(feature_path, features[vid][: SHOTS_NUMS[int(vid) - 1]])
+        print('Extracted: ', vid, features[vid].shape)
 
 if __name__ == '__main__':
     tf.app.run(main)
