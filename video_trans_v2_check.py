@@ -381,7 +381,7 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     for i in range(len(test_vids)):
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * 0.02)
+        hl_num = math.ceil(vlength * 0.025)
         predictions = preds_c[pos : pos + vlength]
         pos += vlength
         for query in summary:
