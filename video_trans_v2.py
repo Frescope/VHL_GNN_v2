@@ -18,7 +18,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='5',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=20,type=int)
@@ -33,7 +33,7 @@ class Path:
     parser.add_argument('--pos_ratio', default=0.1, type=float)
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
-    parser.add_argument('--eval_epoch',default=5,type=int)
+    parser.add_argument('--eval_epoch',default=1,type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -424,6 +424,19 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
+def model_clear(model_save_dir, max_f1):
+    # 清除之前所有F1较小的模型
+    models = []
+    for name in os.listdir(model_save_dir):
+        if name.endswith('.meta'):
+            models.append(name.split('.meta')[0])
+    for model in models:
+        f1 = model.split('-')[-1]
+        if f1.startswith('F') and float(f1.split('F')[-1]) < max_f1:
+            file_path = os.path.join(model_save_dir, model) + '*'
+            os.system('rm -rf %s' % file_path)
+    return
+
 def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -571,11 +584,9 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                     return
                 # save model
                 if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
-                    if f > max_f1:
-                        max_f1 = f
-                        model_path = model_save_dir + 'Model'
-                    elif f == max_f1:
-                        model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
+                    max_f1 = f
+                    model_clear(model_save_dir, max_f1)
+                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
                     saver_overall.save(sess, model_path)
                     logging.info('Model Saved: ' + model_path + '\n')
 
