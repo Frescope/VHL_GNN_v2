@@ -642,6 +642,8 @@ def main(self):
 
     # evaluate all videos in turn
     for kfold in range(4):
+        if kfold < 3:
+            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -661,7 +663,7 @@ def main(self):
         logging.info('Noam LR: ' + str(hp.lr_noam))
         logging.info('Num Heads: ' + str(hp.num_heads))
         logging.info('Num Blocks: ' + str(hp.num_blocks))
-        logging.info('Batchsize: ' + str(hp.bc))
+        logging.info('Batchsize: ' + str(hp.bc)) 
         logging.info('Max Steps: ' + str(hp.maxstep))
         logging.info('Dropout Rate: ' + str(hp.dropout))
         logging.info('Sequence Length: ' + str(hp.seq_len))
