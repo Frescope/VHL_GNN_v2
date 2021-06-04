@@ -601,8 +601,6 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # saver_overall.save(sess, model_path)
         logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
 
-
-
 def main(self):
     # load data
     Tags = load_Tags(TAGS_PATH)
