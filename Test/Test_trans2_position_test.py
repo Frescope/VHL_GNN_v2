@@ -11,14 +11,13 @@ import random
 import logging
 import argparse
 import scipy.io
-import h5py
 import pickle
-from Test_trans2_block_agg_transformer import transformer
+from Test.Test_trans2_position_test_transformer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='1',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=20,type=int)
@@ -34,6 +33,7 @@ class Path:
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--position_mode', default='null', type=str)  # joint, absolute, relative, null
 
 hparams = Path()
 parser = hparams.parser
@@ -600,6 +600,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # saver_overall.save(sess, model_path)
         logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
 
+
+
 def main(self):
     # load data
     Tags = load_Tags(TAGS_PATH)
@@ -609,8 +611,6 @@ def main(self):
 
     # evaluate all videos in turn
     for kfold in range(4):
-        if kfold < 3:
-            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -639,8 +639,6 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
-            if i < 2:
-                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)

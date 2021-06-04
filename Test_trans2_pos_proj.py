@@ -1,5 +1,6 @@
-# 使用contrastive learning+非连续片段的方法，达到引入全局信息以及数据增广的效果。
-# 每个batch中随机选择一些clip，模型输出每个clip与各个concept的相关程度（S1_label），使用MIL_NEC loss
+# video_tran_v2，用于测试新的positional encoding方法
+# 基于全局性的positional encoding，在每一个block处做一次不同的变换，对concept节点加上一个固定的embedding，
+# 在每个video节点上同时加上encoding后变换后的embedding
 
 import os
 import time
@@ -13,7 +14,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_trans2_block_agg_transformer import transformer
+from Test_trans2_pos_proj_transformer import transformer
 import networkx as nx
 
 class Path:
@@ -600,6 +601,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # saver_overall.save(sess, model_path)
         logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
 
+
+
 def main(self):
     # load data
     Tags = load_Tags(TAGS_PATH)
@@ -609,8 +612,6 @@ def main(self):
 
     # evaluate all videos in turn
     for kfold in range(4):
-        if kfold < 3:
-            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -639,8 +640,6 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
-            if i < 2:
-                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)

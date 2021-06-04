@@ -1,6 +1,3 @@
-# 使用contrastive learning+非连续片段的方法，达到引入全局信息以及数据增广的效果。
-# 每个batch中随机选择一些clip，模型输出每个clip与各个concept的相关程度（S1_label），使用MIL_NEC loss
-
 import os
 import time
 import numpy as np
@@ -11,14 +8,13 @@ import random
 import logging
 import argparse
 import scipy.io
-import h5py
 import pickle
-from Test_trans2_block_agg_transformer import transformer
+from Test.Test_trans2_position_test_transformer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='7',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=20,type=int)
@@ -33,7 +29,10 @@ class Path:
     parser.add_argument('--pos_ratio', default=0.1, type=float)
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
-    parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--observe', default=0, type=int)
+    parser.add_argument('--eval_epoch',default=10,type=int)
+    parser.add_argument('--position_mode', default='null', type=str)  # joint, absolute, relative, null
+
 
 hparams = Path()
 parser = hparams.parser
@@ -52,12 +51,12 @@ else:
 D_FEATURE = 1024  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
-D_OUTPUT = 48  # label_S1对应48，label_S2对应45
+D_OUTPUT = 48  # label_S1对应48，label_S2对应45cd y
 CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold
 
-LOAD_CKPT_MODEL = False
+LOAD_CKPT_MODEL = True
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -424,24 +423,39 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-def model_clear(model_save_dir, max_f1):
-    # 清除之前所有F1较小的模型
-    models = []
-    for name in os.listdir(model_save_dir):
-        if name.endswith('.meta'):
-            models.append(name.split('.meta')[0])
-    for model in models:
-        f1 = model.split('-')[-1]
-        if f1.startswith('F') and float(f1.split('F')[-1]) < max_f1:
-            file_path = os.path.join(model_save_dir, model) + '*'
-            os.system('rm -rf %s' % file_path)
-    return
+def model_search(model_save_dir, observe):
+    def takestep(name):
+        return int(name.split('-')[0].split('S')[-1])
+    # 找到要验证的模型名称
+    model_to_restore = []
+    for root,dirs,files in os.walk(model_save_dir):
+        for file in files:
+            if file.endswith('.meta'):
+                model_name = file.split('.meta')[0]
+                model_to_restore.append(os.path.join(root, model_name))
+    model_to_restore = list(set(model_to_restore))
+    # model_to_restore.sort(key=takestep)
+    #
+    # if observe == 0:
+    #     # 只取最高F1的模型
+    #     model_kfold = []
+    #     f1s = []
+    #     for name in model_to_restore:
+    #         f1 = name.split('-')[-1]
+    #         if f1.startswith('F'):
+    #             f1s.append(float(f1.split('F')[-1]))
+    #     if len(f1s) == 0:
+    #         return []  # 没有合格的模型
+    #     f1_max = np.array(f1s).max()
+    #     for name in model_to_restore:
+    #         f1 = name.split('-')[-1]
+    #         if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
+    #             model_kfold.append(name)
+    #     model_to_restore = model_kfold
 
-def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    max_f1 = MAX_F1
+    return model_to_restore
 
+def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -487,10 +501,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
-        grads_t = average_gradients(tower_grads_train)
-        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
-        if test_mode == 1:
-            train_op = tf.no_op()
+        train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -502,8 +513,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
-            saver_overall.restore(sess, CKPT_MODEL_PATH)
+            logging.info(' Ckpt Model Restoring: ' + model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -547,9 +558,6 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
             # save checkpoint &  evaluate
             epoch = step / epoch_step
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
-                if step == 0 and test_mode == 0:
-                    continue
-                train_scheme = train_scheme_build(data_train, hp.seq_len)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)
@@ -558,8 +566,6 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                if not int(epoch) % hp.eval_epoch == 0:
-                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
@@ -579,26 +585,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
                 p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-
-                if test_mode == 1:
-                    return
-                # save model
-                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
-                    max_f1 = f
-                    model_clear(model_save_dir, max_f1)
-                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
-                    saver_overall.save(sess, model_path)
-                    logging.info('Model Saved: ' + model_path + '\n')
-
-            if step % 3000 == 0 and step > 0:
-                model_path = model_save_dir + 'S%d-E%d' % (step + PRESTEPS, epoch)
-                # saver_overall.save(sess, model_path)
-                logging.info('Model Saved: ' + str(step + PRESTEPS))
-
-            # saving final model
-        model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
-        # saver_overall.save(sess, model_path)
-        logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
+                return f
+    return  0
 
 def main(self):
     # load data
@@ -608,9 +596,8 @@ def main(self):
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
     # evaluate all videos in turn
+    model_scores = {}
     for kfold in range(4):
-        if kfold < 3:
-            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -638,16 +625,24 @@ def main(self):
         logging.info('*' * 50)
 
         # repeat
+        scores = []
         for i in range(hp.repeat):
-            if i < 2:
-                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
-            logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
-                         model_save_dir, 0)
-            logging.info('*' * 60)
-        logging.info('^' * 60 + '\n')
+            models_to_restore = model_search(model_save_dir, observe=hp.observe)
+            for i in range(len(models_to_restore)):
+                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+                model_path = models_to_restore[i]
+                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
+                                 model_path)
+                scores.append(f1)
+        model_scores[str((kfold + 3) % 4 + 1)] = scores
+    scores_all = 0
+    for vid in model_scores:
+        scores = model_scores[vid]
+        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
+                     (vid, np.array(scores).mean(), str(scores)))
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()
