@@ -46,6 +46,20 @@ def segment_embedding(inputs, hp, scope='segment_embedding'):
         outputs = tf.concat([clip_nodes, concept_nodes], axis=1)
         return outputs
 
+def position_project(inputs, position_vecs, position_emb, hp, scope='position_projection'):
+    # 在每个block中将positional_encoding做一次不同的线性变换，并为concept nodes加上一个共用的嵌入
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        clip_len = hp.seq_len
+        concept_len = inputs.get_shape().as_list()[1] - clip_len
+        visual_nodes, concept_nodes = tf.split(inputs, [clip_len, concept_len], 1)  # 沿seq_len切开
+        visual_pos_emb = tf.layers.dense(position_vecs, D_MODEL, use_bias=True, activation=None)  # N*seqlen*D_model
+
+        visual_nodes += visual_pos_emb
+        concept_pos_emb = tf.expand_dims(tf.expand_dims(position_emb, 0), 0)  # 1*1*D_model
+        concept_nodes += concept_pos_emb
+        enc = tf.concat([visual_nodes, concept_nodes], axis=1)
+        return enc
+
 def mask(inputs, key_masks=None, type=None):
     padding_num = -2 ** 32 + 1
     if type in ("k", "key", "keys"):
@@ -155,13 +169,17 @@ def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
         outputs += inputs
     return outputs
 
-def encoder(input_nodes, src_masks, drop_out, training, hp):
+def encoder(visual_nodes, concept_nodes, src_masks, positions, drop_out, training, hp):
     # 将输入节点编码，只输出visual节点对应的编码
+    # src_masks对应的是visual与image拼接后的序列
     with tf.variable_scope("encoder", reuse=tf.AUTO_REUSE):
-        enc = input_nodes
-        block_outputs = []
+        enc = tf.concat([visual_nodes, concept_nodes], axis=1)
+        position_vecs = positional_encoding(visual_nodes, positions)  # visual节点做映射的基础
+        position_emb = tf.get_variable(name='concept_posemb', shape=[D_MODEL])  # concept节点共用的位置嵌入
+
         for i in range(hp.num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
+                enc = position_project(enc, position_vecs, position_emb, hp)
                 enc = multihead_attention(queries=enc,
                                              keys=enc,
                                              values=enc,
@@ -171,27 +189,7 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
                                              training=training,
                                              causality=False)
                 enc = ff(enc, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
-                block_outputs.append(enc)
         memory = enc
-
-        # block_outputs = tf.concat(block_outputs, axis=0)
-        # [bc,seq,d] = memory.get_shape().as_list()
-        # block_outputs = tf.reshape(block_outputs, shape=[hp.num_blocks, bc, seq, d])
-        # block_outputs = tf.transpose(block_outputs, perm=[1,2,0,3])  # bc*seq*blocknum*d
-        # block_outputs = tf.reshape(block_outputs, shape=[bc*seq, hp.num_blocks, d])  # (bc*seq)*blocknum*d
-        # block_mask = tf.math.equal(tf.convert_to_tensor(np.ones([bc*seq, hp.num_blocks])), 0)
-        # block_agg = multihead_attention(queries=block_outputs,
-        #                                 keys=block_outputs,
-        #                                 values=block_outputs,
-        #                                 key_masks=block_mask,
-        #                                 num_heads=4,
-        #                                 dropout_rate=0,
-        #                                 training=training,
-        #                                 causality=False)
-        # block_agg = ff(block_agg, num_units=[D_FF, D_MODEL], dropout_rate=0)
-        # block_agg = tf.reduce_mean(block_agg, axis=1)  # (bc*seq)*d
-        # block_agg = tf.reshape(block_agg, shape=[bc, seq, d])
-        # memory = block_agg
 
         return memory
 
@@ -229,15 +227,10 @@ def transformer(features, labels, positions, scores_src, scores_tgt, txt_emb, im
         # encoder & decoder inputs
         image_nodes = tf.layers.dense(img_emb, D_MODEL, use_bias=True, activation=None)
         visual_nodes = tf.layers.dense(features, D_MODEL, use_bias=True, activation=None)
-
-        # visual_nodes += positional_encoding(visual_nodes, positions)
-        input_nodes = tf.concat([visual_nodes, image_nodes], axis=1)
-        input_nodes = segment_embedding(input_nodes, hp)
-
         src_masks = tf.math.equal(scores_src, 0)  # 标记输入的节点序列内哪些是padding部分
 
         # encoding & decoding
-        memory = encoder(input_nodes, src_masks, drop_out, training, hp)
+        memory = encoder(visual_nodes, image_nodes, src_masks, positions, drop_out, training, hp)
         decoder_output = memory[:, :hp.seq_len, :]
 
         c_num = labels.get_shape().as_list()[-1]

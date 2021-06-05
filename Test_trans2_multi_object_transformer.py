@@ -245,15 +245,12 @@ def transformer(features, positions, scores_src, scores_tgt, txt_emb, img_emb, d
         # decoder_output = decoder(decoder_input, memory, src_masks, tgt_masks, drop_out, training, hp)
         decoder_output = memory[:, :hp.seq_len, :]
 
-        logits = tf.layers.dense(decoder_output, 512, use_bias=True, activation=tf.nn.relu)
-        logits = tf.layers.dense(logits, 256, use_bias=True, activation=tf.nn.relu)
-        logits = tf.layers.dense(logits, c_num, use_bias=True, activation=None)
+        concept_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
+        concept_branch = tf.layers.dense(concept_branch, 512, use_bias=True, activation=tf.nn.relu)
+        concept_logits = tf.layers.dense(concept_branch, c_num, use_bias=True, activation=None)
 
-        concept_logits = tf.layers.dense(decoder_output, 512, use_bias=True, activation=tf.nn.relu)
-        concept_logits = tf.layers.dense(concept_logits, 256, use_bias=True, activation=tf.nn.relu)
-        concept_logits = tf.layers.dense(concept_logits, 128, use_bias=True, activation=tf.nn.relu)
-        concept_logits = tf.layers.dense(concept_logits, c_num, use_bias=True, activation=tf.nn.relu)
+        summary_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
+        summary_branch = tf.layers.dense(summary_branch, 512, use_bias=True, activation=tf.nn.relu)
+        logits = tf.layers.dense(summary_branch + concept_branch, c_num, use_bias=True, activation=None)
 
         return logits, concept_logits
-
-
