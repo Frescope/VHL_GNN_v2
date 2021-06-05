@@ -639,6 +639,8 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
+            if i < 1:
+                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
