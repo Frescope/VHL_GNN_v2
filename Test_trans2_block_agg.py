@@ -609,6 +609,8 @@ def main(self):
 
     # evaluate all videos in turn
     for kfold in range(4):
+        if kfold < 3:
+            continue
         # split data
         data_train = {}
         data_valid = {}
