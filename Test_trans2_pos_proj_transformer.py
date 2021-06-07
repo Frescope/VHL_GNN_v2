@@ -179,7 +179,7 @@ def encoder(visual_nodes, concept_nodes, src_masks, positions, drop_out, trainin
 
         for i in range(hp.num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
-                enc = position_project(enc, position_vecs, position_emb, hp)
+                # enc = position_project(enc, position_vecs, position_emb, hp)
                 enc = multihead_attention(queries=enc,
                                              keys=enc,
                                              values=enc,
