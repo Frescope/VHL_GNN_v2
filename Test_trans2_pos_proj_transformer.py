@@ -174,8 +174,8 @@ def encoder(visual_nodes, concept_nodes, src_masks, positions, drop_out, trainin
     # src_masks对应的是visual与image拼接后的序列
     with tf.variable_scope("encoder", reuse=tf.AUTO_REUSE):
         enc = tf.concat([visual_nodes, concept_nodes], axis=1)
-        position_vecs = positional_encoding(visual_nodes, positions)  # visual节点做映射的基础
-        position_emb = tf.get_variable(name='concept_posemb', shape=[D_MODEL])  # concept节点共用的位置嵌入
+        # position_vecs = positional_encoding(visual_nodes, positions)  # visual节点做映射的基础
+        # position_emb = tf.get_variable(name='concept_posemb', shape=[D_MODEL])  # concept节点共用的位置嵌入
 
         for i in range(hp.num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
