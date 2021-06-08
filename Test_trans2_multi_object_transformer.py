@@ -251,6 +251,9 @@ def transformer(features, positions, scores_src, scores_tgt, txt_emb, img_emb, d
 
         summary_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
         summary_branch = tf.layers.dense(summary_branch, 512, use_bias=True, activation=tf.nn.relu)
-        logits = tf.layers.dense(summary_branch + concept_branch, c_num, use_bias=True, activation=None)
+
+        logits = tf.layers.dense(summary_branch + concept_branch, 512, use_bias=True, activation=None)
+        logits = tf.layers.dense(logits, 256, use_bias=True, activation=tf.nn.relu)
+        logits = tf.layers.dense(logits, c_num, use_bias=True, activation=None)
 
         return logits, concept_logits
