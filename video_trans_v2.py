@@ -113,7 +113,7 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         # feature
 
         feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
-        feature_path = feature_base + 'V%d_C3D.h5' % vid
+        # feature_path = feature_base + 'V%d_C3D.h5' % vid
         f = h5py.File(feature_path, 'r')
         feature = f['feature'][()][:vlength]
 
