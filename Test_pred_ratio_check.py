@@ -600,7 +600,7 @@ def main(self):
 
     # evaluate all videos in turn
     model_scores = {}
-    pred_ratios = [(x / 1000) for x in list(range(20,22))]
+    pred_ratios = [(x / 1000) for x in list(range(10,31))]
     for kfold in range(4):
         logging.info('-' * 50)
         logging.info('KFold: %d, Test: %d' % (kfold, ((kfold + 3) % 4 + 1)))
