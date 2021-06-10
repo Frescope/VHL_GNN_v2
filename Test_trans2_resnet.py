@@ -1,4 +1,7 @@
-# 基于video_trans2，测试不同的预测比例
+# 测试resnet特征
+# 使用contrastive learning+非连续片段的方法，达到引入全局信息以及数据增广的效果。
+# 每个batch中随机选择一些clip，模型输出每个clip与各个concept的相关程度（S1_label），使用MIL_NEC loss
+
 import os
 import time
 import numpy as np
@@ -11,7 +14,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from transformer_v2 import transformer
+from Test_trans2_resnet_transformer import transformer
 import networkx as nx
 
 class Path:
@@ -30,9 +33,8 @@ class Path:
     parser.add_argument('--maxstep', default=10000, type=int)
     parser.add_argument('--pos_ratio', default=0.1, type=float)
     parser.add_argument('--multimask',default=0, type=int)
-    parser.add_argument('--repeat',default=2,type=int)
-    parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch',default=10,type=int)
+    parser.add_argument('--repeat',default=3,type=int)
+    parser.add_argument('--eval_epoch',default=1,type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -47,16 +49,16 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-# D_FEATURE = 2048  # for resnet
-D_FEATURE = 1024  # for I3D
+D_FEATURE = 2048  # for resnet
+# D_FEATURE = 1024  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
-D_OUTPUT = 48  # label_S1对应48，label_S2对应45cd y
+D_OUTPUT = 48  # label_S1对应48，label_S2对应45
 CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold
 
-LOAD_CKPT_MODEL = True
+LOAD_CKPT_MODEL = False
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -111,13 +113,13 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         vlength = len(Tags[vid-1])
         # feature
 
-        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
         # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        # f = h5py.File(feature_path, 'r')
-        # feature = f['feature'][()][:vlength]
+        f = h5py.File(feature_path, 'r')
+        feature = f['feature'][()][:vlength]
 
-        feature_path = feature_base + 'V%d_I3D.npy' % vid
-        feature = np.load(feature_path)
+        # feature_path = feature_base + 'V%d_I3D.npy' % vid
+        # feature = np.load(feature_path)
 
         data[str(vid)]['feature'] = feature
         # label
@@ -370,7 +372,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
             sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
     return sim_mat
 
-def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts, pred_ratio):
+def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     # 从每个视频的预测结果中，根据query中包含的concept选出相关程度最高的一组shot，匹配后计算f1，求所有query的平均结果
     preds_c = pred_scores[0]
     for i in range(1, len(pred_scores)):
@@ -382,7 +384,7 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts, p
     for i in range(len(test_vids)):
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * pred_ratio)
+        hl_num = math.ceil(vlength * 0.02)
         predictions = preds_c[pos : pos + vlength]
         pos += vlength
         for query in summary:
@@ -423,39 +425,24 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-def model_search(model_save_dir, observe):
-    def takestep(name):
-        return int(name.split('-')[0].split('S')[-1])
-    # 找到要验证的模型名称
-    model_to_restore = []
-    for root,dirs,files in os.walk(model_save_dir):
-        for file in files:
-            if file.endswith('.meta'):
-                model_name = file.split('.meta')[0]
-                model_to_restore.append(os.path.join(root, model_name))
-    model_to_restore = list(set(model_to_restore))
-    # model_to_restore.sort(key=takestep)
-    #
-    # if observe == 0:
-    #     # 只取最高F1的模型
-    #     model_kfold = []
-    #     f1s = []
-    #     for name in model_to_restore:
-    #         f1 = name.split('-')[-1]
-    #         if f1.startswith('F'):
-    #             f1s.append(float(f1.split('F')[-1]))
-    #     if len(f1s) == 0:
-    #         return []  # 没有合格的模型
-    #     f1_max = np.array(f1s).max()
-    #     for name in model_to_restore:
-    #         f1 = name.split('-')[-1]
-    #         if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
-    #             model_kfold.append(name)
-    #     model_to_restore = model_kfold
+def model_clear(model_save_dir, max_f1):
+    # 清除之前所有F1较小的模型
+    models = []
+    for name in os.listdir(model_save_dir):
+        if name.endswith('.meta'):
+            models.append(name.split('.meta')[0])
+    for model in models:
+        f1 = model.split('-')[-1]
+        if f1.startswith('F') and float(f1.split('F')[-1]) < max_f1:
+            file_path = os.path.join(model_save_dir, model) + '*'
+            os.system('rm -rf %s' % file_path)
+    return
 
-    return model_to_restore
+def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
+    if not os.path.exists(model_save_dir):
+        os.makedirs(model_save_dir)
+    max_f1 = MAX_F1
 
-def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path, pred_ratios):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -501,7 +488,10 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
-        train_op = tf.no_op()
+        grads_t = average_gradients(tower_grads_train)
+        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
+        if test_mode == 1:
+            train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -513,8 +503,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + model_path)
-            saver_overall.restore(sess, model_path)
+            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
+            saver_overall.restore(sess, CKPT_MODEL_PATH)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -558,6 +548,9 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
             # save checkpoint &  evaluate
             epoch = step / epoch_step
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
+                if step == 0 and test_mode == 0:
+                    continue
+                train_scheme = train_scheme_build(data_train, hp.seq_len)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)
@@ -566,6 +559,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
+                if not int(epoch) % hp.eval_epoch == 0:
+                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
@@ -583,13 +578,30 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                                                                         training_holder: False})
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
-                fs = []
-                for pr in pred_ratios:
-                    p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts, pr)
-                    logging.info('Ratio: %.3f, Precision: %.3f, Recall: %.3f, F1: %.3f' % (pr, p, r, f))
-                    fs.append(f)
-                return fs
-    return  0
+                p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
+                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
+
+                if test_mode == 1:
+                    return
+                # save model
+                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
+                    max_f1 = f
+                    model_clear(model_save_dir, max_f1)
+                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
+                    saver_overall.save(sess, model_path)
+                    logging.info('Model Saved: ' + model_path + '\n')
+
+            if step % 3000 == 0 and step > 0:
+                model_path = model_save_dir + 'S%d-E%d' % (step + PRESTEPS, epoch)
+                # saver_overall.save(sess, model_path)
+                logging.info('Model Saved: ' + str(step + PRESTEPS))
+
+            # saving final model
+        model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
+        # saver_overall.save(sess, model_path)
+        logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
+
+
 
 def main(self):
     # load data
@@ -599,11 +611,7 @@ def main(self):
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
     # evaluate all videos in turn
-    model_scores = {}
-    pred_ratios = [(x / 1000) for x in list(range(20,22))]
     for kfold in range(4):
-        logging.info('-' * 50)
-        logging.info('KFold: %d, Test: %d' % (kfold, ((kfold + 3) % 4 + 1)))
         # split data
         data_train = {}
         data_valid = {}
@@ -613,28 +621,32 @@ def main(self):
         data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
         data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
 
+        # info
+        logging.info('*' * 20 + 'Settings' + '*' * 20)
+        logging.info('K-fold: ' + str(kfold))
+        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
+        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
+        logging.info('WarmUp: ' + str(hp.warmup))
+        logging.info('Noam LR: ' + str(hp.lr_noam))
+        logging.info('Num Heads: ' + str(hp.num_heads))
+        logging.info('Num Blocks: ' + str(hp.num_blocks))
+        logging.info('Batchsize: ' + str(hp.bc))
+        logging.info('Max Steps: ' + str(hp.maxstep))
+        logging.info('Dropout Rate: ' + str(hp.dropout))
+        logging.info('Sequence Length: ' + str(hp.seq_len))
+        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+        logging.info('*' * 50)
+
         # repeat
-        scores = []  # 对于这一video的所有pred_ratio对应的f1 score，对多次重复取均值
         for i in range(hp.repeat):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            models_to_restore = model_search(model_save_dir, observe=hp.observe)
-            for i in range(len(models_to_restore)):
-                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
-                model_path = models_to_restore[i]
-                f1s = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 model_path, pred_ratios)
-                scores.append(f1s)
-        scores = np.array(scores).mean(axis=0)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores  # 对每个video都得到一组score，对应每个pred_ratio
-
-    scores_all = np.zeros((0, len(pred_ratios)))
-    for vid in model_scores:
-        scores = model_scores[vid]
-        scores_all = np.vstack((scores_all, scores))
-    scores_all = np.mean(scores_all, axis=0)
-    logging.info('\n\nMax Score: %.3f' % (scores_all.max()))
-    for i in range(len(scores_all)):
-        logging.info(str(pred_ratios[i])+ ' '+str(scores_all[i]))
+            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
+            logging.info('*' * 60)
+            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
+                         model_save_dir, 0)
+            logging.info('*' * 60)
+        logging.info('^' * 60 + '\n')
 
 if __name__ == '__main__':
     tf.app.run()

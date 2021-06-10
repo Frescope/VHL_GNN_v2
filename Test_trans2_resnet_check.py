@@ -1,4 +1,3 @@
-# 基于video_trans2，测试不同的预测比例
 import os
 import time
 import numpy as np
@@ -11,12 +10,12 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from transformer_v2 import transformer
+from Test_trans2_resnet_transformer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='7',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=20,type=int)
@@ -30,7 +29,7 @@ class Path:
     parser.add_argument('--maxstep', default=10000, type=int)
     parser.add_argument('--pos_ratio', default=0.1, type=float)
     parser.add_argument('--multimask',default=0, type=int)
-    parser.add_argument('--repeat',default=2,type=int)
+    parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch',default=10,type=int)
 
@@ -47,8 +46,8 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-# D_FEATURE = 2048  # for resnet
-D_FEATURE = 1024  # for I3D
+D_FEATURE = 2048  # for resnet
+# D_FEATURE = 1024  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
 D_OUTPUT = 48  # label_S1对应48，label_S2对应45cd y
@@ -111,13 +110,13 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         vlength = len(Tags[vid-1])
         # feature
 
-        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
         # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        # f = h5py.File(feature_path, 'r')
-        # feature = f['feature'][()][:vlength]
+        f = h5py.File(feature_path, 'r')
+        feature = f['feature'][()][:vlength]
 
-        feature_path = feature_base + 'V%d_I3D.npy' % vid
-        feature = np.load(feature_path)
+        # feature_path = feature_base + 'V%d_I3D.npy' % vid
+        # feature = np.load(feature_path)
 
         data[str(vid)]['feature'] = feature
         # label
@@ -370,7 +369,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
             sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
     return sim_mat
 
-def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts, pred_ratio):
+def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     # 从每个视频的预测结果中，根据query中包含的concept选出相关程度最高的一组shot，匹配后计算f1，求所有query的平均结果
     preds_c = pred_scores[0]
     for i in range(1, len(pred_scores)):
@@ -382,7 +381,7 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts, p
     for i in range(len(test_vids)):
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * pred_ratio)
+        hl_num = math.ceil(vlength * 0.02)
         predictions = preds_c[pos : pos + vlength]
         pos += vlength
         for query in summary:
@@ -455,7 +454,7 @@ def model_search(model_save_dir, observe):
 
     return model_to_restore
 
-def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path, pred_ratios):
+def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -583,12 +582,9 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                                                                         training_holder: False})
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
-                fs = []
-                for pr in pred_ratios:
-                    p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts, pr)
-                    logging.info('Ratio: %.3f, Precision: %.3f, Recall: %.3f, F1: %.3f' % (pr, p, r, f))
-                    fs.append(f)
-                return fs
+                p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
+                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
+                return f
     return  0
 
 def main(self):
@@ -600,10 +596,7 @@ def main(self):
 
     # evaluate all videos in turn
     model_scores = {}
-    pred_ratios = [(x / 1000) for x in list(range(20,22))]
     for kfold in range(4):
-        logging.info('-' * 50)
-        logging.info('KFold: %d, Test: %d' % (kfold, ((kfold + 3) % 4 + 1)))
         # split data
         data_train = {}
         data_valid = {}
@@ -613,28 +606,42 @@ def main(self):
         data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
         data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
 
+        # info
+        logging.info('*' * 20 + 'Settings' + '*' * 20)
+        logging.info('K-fold: ' + str(kfold))
+        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
+        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
+        logging.info('WarmUp: ' + str(hp.warmup))
+        logging.info('Noam LR: ' + str(hp.lr_noam))
+        logging.info('Num Heads: ' + str(hp.num_heads))
+        logging.info('Num Blocks: ' + str(hp.num_blocks))
+        logging.info('Batchsize: ' + str(hp.bc))
+        logging.info('Max Steps: ' + str(hp.maxstep))
+        logging.info('Dropout Rate: ' + str(hp.dropout))
+        logging.info('Sequence Length: ' + str(hp.seq_len))
+        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+        logging.info('*' * 50)
+
         # repeat
-        scores = []  # 对于这一video的所有pred_ratio对应的f1 score，对多次重复取均值
+        scores = []
         for i in range(hp.repeat):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             models_to_restore = model_search(model_save_dir, observe=hp.observe)
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
-                f1s = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 model_path, pred_ratios)
-                scores.append(f1s)
-        scores = np.array(scores).mean(axis=0)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores  # 对每个video都得到一组score，对应每个pred_ratio
-
-    scores_all = np.zeros((0, len(pred_ratios)))
+                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
+                                 model_path)
+                scores.append(f1)
+        model_scores[str((kfold + 3) % 4 + 1)] = scores
+    scores_all = 0
     for vid in model_scores:
         scores = model_scores[vid]
-        scores_all = np.vstack((scores_all, scores))
-    scores_all = np.mean(scores_all, axis=0)
-    logging.info('\n\nMax Score: %.3f' % (scores_all.max()))
-    for i in range(len(scores_all)):
-        logging.info(str(pred_ratios[i])+ ' '+str(scores_all[i]))
+        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
+                     (vid, np.array(scores).mean(), str(scores)))
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()

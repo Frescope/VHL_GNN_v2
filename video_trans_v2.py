@@ -48,8 +48,8 @@ else:
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
-D_FEATURE = 2048  # for resnet
-# D_FEATURE = 1024  # for I3D
+# D_FEATURE = 2048  # for resnet
+D_FEATURE = 1024  # for I3D
 D_TXT_EMB = 300
 D_IMG_EMB = 2048
 D_OUTPUT = 48  # label_S1对应48，label_S2对应45
@@ -112,13 +112,13 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         vlength = len(Tags[vid-1])
         # feature
 
-        feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
-        # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        f = h5py.File(feature_path, 'r')
-        feature = f['feature'][()][:vlength]
+        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
+        # # feature_path = feature_base + 'V%d_C3D.h5' % vid
+        # f = h5py.File(feature_path, 'r')
+        # feature = f['feature'][()][:vlength]
 
-        # feature_path = feature_base + 'V%d_I3D.npy' % vid
-        # feature = np.load(feature_path)
+        feature_path = feature_base + 'V%d_I3D.npy' % vid
+        feature = np.load(feature_path)
 
         data[str(vid)]['feature'] = feature
         # label
