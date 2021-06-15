@@ -642,14 +642,13 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
-            if not (kfold == 0 and i == 0) or not (kfold == 3 and i == 2):
-                continue
-            model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
-            logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
-                         model_save_dir, 0)
-            logging.info('*' * 60)
+            if (kfold == 0 and i == 0) or (kfold == 3 and i == 2):
+                model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
+                logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
+                logging.info('*' * 60)
+                run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
+                             model_save_dir, 0)
+                logging.info('*' * 60)
         logging.info('^' * 60 + '\n')
 
 if __name__ == '__main__':
