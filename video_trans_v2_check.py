@@ -494,10 +494,10 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
 
                 loss, loss_ob = tower_loss(logits,labels)
                 varlist = tf.trainable_variables()  # 全部训练
-                grads_train = opt_train.compute_gradients(loss, varlist)
-                thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
-                grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
-                tower_grads_train.append(grads_train_cap)
+                # grads_train = opt_train.compute_gradients(loss, varlist)
+                # thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
+                # grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
+                # tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
         train_op = tf.no_op()
