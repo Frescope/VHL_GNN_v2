@@ -250,7 +250,7 @@ def transformer(features, labels, positions, scores_src, scores_tgt, txt_emb, im
         logits = tf.layers.dense(decoder_output, 512, use_bias=True, activation=tf.nn.relu)
         logits = tf.layers.dense(logits, 256, use_bias=True, activation=tf.nn.relu)
         logits = tf.layers.dense(logits, c_num, use_bias=True, activation=None)
-        logits = tf.nn.softmax(logits)
+        logits = tf.nn.softmax(logits, axis=1)
         return logits
 
 
