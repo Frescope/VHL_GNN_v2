@@ -642,7 +642,7 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
-            if (kfold == 0 and i == 0) or (kfold == 3 and i == 2):
+            if (kfold == 0 and i == 0):
                 model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
                 logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
                 logging.info('*' * 60)
