@@ -86,7 +86,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
         # softmax
         # outputs = tf.zeros_like(outputs)  # attention权重全部相等
         outputs = tf.nn.softmax(outputs)
-        outputs = tf.zeros_like(outputs)  # 没有attention输出
+        # outputs = tf.zeros_like(outputs)  # 没有attention输出
 
         # dropout
         outputs = tf.layers.dropout(outputs, rate=dropout_rate, training=training)
@@ -250,6 +250,7 @@ def transformer(features, labels, positions, scores_src, scores_tgt, txt_emb, im
         logits = tf.layers.dense(decoder_output, 512, use_bias=True, activation=tf.nn.relu)
         logits = tf.layers.dense(logits, 256, use_bias=True, activation=tf.nn.relu)
         logits = tf.layers.dense(logits, c_num, use_bias=True, activation=None)
+        logits = tf.nn.softmax(logits)
         return logits
 
 
