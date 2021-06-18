@@ -412,6 +412,60 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     F1_values = np.array(F1_values)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
+def evaluation_qualify(pred_scores, query_summary, Tags, test_vids, concepts, hp):
+    # 首先在每个输出序列中选择一部分作为候选，然后在全局的候选集里选出最终的预测
+    preds_c = pred_scores[0]
+    for i in range(1, len(pred_scores)):
+        preds_c = np.vstack((preds_c, pred_scores[i]))
+    pos = 0
+    PRE_values = []
+    REC_values = []
+    F1_values = []
+    for i in range(len(test_vids)):
+        vid, vlength = test_vids[i]
+        summary = query_summary[str(vid)]
+        hl_num_seq = math.ceil(hp.seq_len * 0.2)  # 每个序列中选20%
+        hl_num_video = math.ceil(vlength * 0.02)
+        predictions = preds_c[pos: pos + vlength]
+        pos += vlength
+        for query in summary:
+            shots_gt = summary[query]
+            c1, c2 = query.split('_')
+            ind1 = concepts.index(c1)
+            ind2 = concepts.index(c2)
+            scores_ovr = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
+
+            # 从每个输出序列中选择候选shot，再从候选集里选出最后的预测
+            video_pos = 0
+            candidate = np.zeros((0, 2))
+            while video_pos < vlength:
+                scores_seq = scores_ovr[video_pos : video_pos + hp.seq_len]
+                index_seq = np.argsort(scores_seq)[-hl_num_seq : ] + video_pos
+                candidate_seq = scores_ovr[index_seq]
+                index_seq = index_seq.reshape((-1,1))
+                candidate_seq = candidate_seq.reshape((-1,1))
+                candidate_seq = np.concatenate((candidate_seq, index_seq), axis=1)  # seqlen*2
+                candidate = np.vstack((candidate, candidate_seq))
+                video_pos += hp.seq_len
+            candidate = candidate[candidate[:, 0].argsort()]
+            shots_pred = candidate[-hl_num_video : , 1]
+            shots_pred.sort()
+            shots_pred = shots_pred.astype(int)
+
+            # compute
+            sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+            weight = shot_matching(sim_mat)
+            precision = weight / len(shots_pred)
+            recall = weight / len(shots_gt)
+            f1 = 2 * precision * recall / (precision + recall)
+            PRE_values.append(precision)
+            REC_values.append(recall)
+            F1_values.append(f1)
+    PRE_values = np.array(PRE_values)
+    REC_values = np.array(REC_values)
+    F1_values = np.array(F1_values)
+    return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
+
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
     init_lr: initial learning rate. scalar.
@@ -582,7 +636,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                                                                         training_holder: False})
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
-                p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
+                # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
+                p, r, f = evaluation_qualify(pred_scores, query_summary, Tags, test_vids, concepts, hp)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
                 return f
     return  0

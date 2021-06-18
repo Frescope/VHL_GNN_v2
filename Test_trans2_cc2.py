@@ -1,6 +1,5 @@
-# 使用contrastive learning+非连续片段的方法，达到引入全局信息以及数据增广的效果。
-# 每个batch中随机选择一些clip，模型输出每个clip与各个concept的相关程度（S1_label），使用MIL_NEC loss
-
+# continuous context 2
+# 每个batch使用全部的concept计算loss
 import os
 import time
 import numpy as np
@@ -13,7 +12,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from transformer_v2 import transformer
+from Test_trans2_cc2_transformer import transformer
 import networkx as nx
 
 class Path:
@@ -21,19 +20,19 @@ class Path:
     parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=20,type=int)
-    parser.add_argument('--bc',default=20,type=int)
+    parser.add_argument('--seq_len',default=51,type=int)
+    parser.add_argument('--bc',default=50,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=1e-6, type=float)
-    parser.add_argument('--warmup', default=1500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
-    parser.add_argument('--pos_ratio', default=0.1, type=float)
+    parser.add_argument('--lr_noam', default=10e-6, type=float)
+    parser.add_argument('--warmup', default=4000, type=int)
+    parser.add_argument('--maxstep', default=30000, type=int)
+    parser.add_argument('--pos_ratio', default=0.4, type=float)
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
-    parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--eval_epoch',default=3,type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -111,20 +110,11 @@ def load_feature_4fold(feature_base, labe_path, Tags):
         data[str(vid)] = {}
         vlength = len(Tags[vid-1])
         # feature
-
-        # feature_path = feature_base + 'V%d_resnet_avg.h5' % vid
-        # # feature_path = feature_base + 'V%d_C3D.h5' % vid
-        # f = h5py.File(feature_path, 'r')
-        # feature = f['feature'][()][:vlength]
-
         feature_path = feature_base + 'V%d_I3D.npy' % vid
         feature = np.load(feature_path)
-
         data[str(vid)]['feature'] = feature
         # label
         label = np.array(labels[str(vid)])[:,:vlength].T
-        # for s1
-        # label = (label - label.min(0)) / (label.max(0) - label.min(0) + 1e-6)  # 归一化
         data[str(vid)]['label'] = label
         logging.info('Vid: '+str(vid)+' Feature: '+str(feature.shape)+' Label: '+str(label.shape))
     return data
@@ -184,11 +174,14 @@ def load_concept(dict_path, txt_emb_path, img_emb_dir):
         concept_embedding[key]['img'] = img_embedding[img_key]
     return concepts, concept_embedding
 
-def train_scheme_build(data_train, seq_len):
-    # 对于每个视频，标记出每个concept对应的正例和负例，分别为每个concept建立正例与负例集合，每个序列中只在一个concept对应的正例与负例集合中选择，目的是保证每个输入序列只针对一个concept进行训练
-    # 每次按照一定比例从正例集合中取若干clip（按顺序），所有正例全部训练一次作为一个epoch，每个epoch后随机化正例与负例集合的顺序
-    # 不同视频、不同concept的序列混合排列，但是必须保证每个序列中只有来自同一个视频的clip
-    info_dict = {}
+def train_scheme_build_cc(data_train, hp):
+    # train_scheme for continuous context
+    # 对于每个视频，标记出每个concept对应的正例和负例，分别为每个concept建立正例与负例集合，
+    # 每个batch中，按照一定比例从正例和负例集合中分别取若干clip，每个clip取其两边的邻居，扩展成一个序列
+    # 所有正例全部训练一次作为一个epoch，每个epoch后随机化正例与负例集合的顺序
+    # 每个batch中的序列全部来自同一个视频、针对同一个concept，在batch-level上计算loss
+
+    info_dict = {}  # 记录每个concept对应的正例和负例
     for vid in data_train:
         label = data_train[vid]['label']
         info_dict[vid] = {}
@@ -196,102 +189,161 @@ def train_scheme_build(data_train, seq_len):
             label_concept = label[:, cid]
             concept_pos_list = list(np.where(label_concept > 0)[0])
             concept_neg_list = list(np.where(label_concept == 0)[0])
-            random.shuffle(concept_pos_list)
-            random.shuffle(concept_neg_list)
-            info_dict[vid][str(cid)] = [concept_pos_list, concept_neg_list]
+            if len(concept_pos_list) == 0:
+                continue  # 没有正例，舍弃这一concept
+            info_dict[vid][cid] = [concept_pos_list, concept_neg_list]
 
-    # 按照固定比例选取正例与负例，取完所有正例为止，每个epoch更新一次训练列表
-    train_scheme = []
-    pos_num = math.ceil(seq_len * hp.pos_ratio)
+    # 对每个视频的每个concept，生成每个正例和负例对应的序列
+    seq_dict = {}  # 根据info_dict生成对应的序列
     for vid in info_dict:
-        for cid in range(CONCEPT_NUM):
-            concept_pos_list, concept_neg_list = info_dict[vid][str(cid)]
-            pos_ind = 0  # pos_list中的位置
-            neg_ind = 0
-            while(pos_ind < len(concept_pos_list)):
-                clip_list = concept_pos_list[pos_ind : pos_ind + pos_num]
-                clip_list += concept_neg_list[neg_ind : neg_ind + seq_len - len(clip_list)]  # 正例不足时用负例补足
-                clip_list += concept_pos_list[0 : seq_len - len(clip_list)]  # 负例不足时做padding，一般不起作用
-                clip_list.sort()
+        vlength = len(data_train[vid]['label'])
+        seq_dict[vid] = {}
+        for cid in info_dict[vid]:
+            pos_seq_list = []  # 正样本对应的序列
+            for pos_sample in info_dict[vid][cid][0]:
+                seq_start = pos_sample - int(hp.seq_len / 2)
+                seq_end = seq_start + hp.seq_len
+                seq_start = max(0, seq_start)
+                seq_end = min(vlength, seq_end)
+                pos_seq_list.append((vid, cid, seq_start, seq_end, pos_sample, 1))
+            neg_seq_list = []
+            for neg_sample in info_dict[vid][cid][1]:
+                seq_start = neg_sample - int(hp.seq_len / 2)
+                seq_end = seq_start + hp.seq_len
+                seq_start = max(0, seq_start)
+                seq_end = min(vlength, seq_end)
+                neg_seq_list.append((vid, cid, seq_start, seq_end, neg_sample, 0))
+            random.shuffle(pos_seq_list)  # 在这里打乱正例和负例之间的对应关系，之后按打乱之后的顺序依次取样本
+            random.shuffle(neg_seq_list)
+            seq_dict[vid][cid] = [pos_seq_list, neg_seq_list]
 
-                # # test
-                # label_temp = np.sum(data_train[vid]['label'], axis=1)[clip_list]
-                # pl = np.where(label_temp > 0)[0]
-                # nl = np.where(label_temp == 0)[0]
-                # print(vid,pos_ind, 'pos: ',len(pl), pos_ind, 'neg: ',len(nl), neg_ind)
-
+    # 在每个batch中，从同一个视频的某个concept对应的正例和负例序列中，按照固定比例取序列
+    # train_scheme中包括一个epoch中的每个batch，所有正例都取样过一次作为一个epoch
+    # 每个epoch更新一次训练列表（打乱正负例的对应关系、打乱video和concept的顺序）
+    train_scheme = []  # ts->batch->seq
+    bs = hp.bc * hp.gpu_num
+    pos_num = math.ceil(bs * hp.pos_ratio)  # 一个batch中的正例数目
+    for vid in seq_dict:
+        for cid in seq_dict[vid]:  # 保证一个batch中的所有序列都对应同一个视频的相同concept
+            pos_list, neg_list = seq_dict[vid][cid]
+            pos_ind = neg_ind = 0
+            while pos_ind < len(pos_list):
+                batch = pos_list[pos_ind : pos_ind + pos_num]
+                batch += neg_list[neg_ind : neg_ind + bs - len(batch)]  # 正例不足时用负例补足
+                batch += neg_list[0 : bs - len(batch)]  # 负例不足时做padding，一般不起作用
                 pos_ind += pos_num
-                neg_ind = (neg_ind + seq_len - pos_num) % len(concept_neg_list)  # 循环取负例
-                train_scheme.append((vid, cid, clip_list))
-    random.shuffle(train_scheme)
+                neg_ind = (neg_ind + bs - pos_num) % len(neg_list)  # 循环取负例
+                train_scheme.append((vid, cid, batch))
+    random.shuffle(train_scheme)  # 在这里打乱video & concept的输入顺序
+
     return train_scheme
 
-def get_batch_train(data_train, train_scheme, step, gpu_num, bc, seq_len):
-    # 从train_scheme中获取gpu_num*bc个序列，每个长度seq_len，并返回每个clip的全局位置
-    batch_num = gpu_num * bc
-    features = []
-    labels = []
-    positions = []
-    for i in range(batch_num):
-        pos = (step * batch_num + i) % len(train_scheme)
-        vid, cid, clip_list = train_scheme[pos]
-        features.append(data_train[vid]['feature'][clip_list])
-        labels.append(data_train[vid]['label'][clip_list])
-        positions.append(clip_list)
-    features = np.array(features)
-    labels = np.array(labels)
-    positions = np.array(positions)
-    scores = np.ones((batch_num, seq_len))
-    return features, labels, positions, scores
+def get_batch_train_cc(data_train, train_scheme, step, hp):
+    # get batch for continuous context
+    # 按照ts给出的每个batch中的序列抽取特征，在两端做padding
 
-def test_scheme_build(data_test, seq_len):
-    # 依次输入测试集中所有clip，不足seqlen的要补足，在getbatch中补足不够一个batch的部分
-    # (vid, seq_start, seq_end)形式
-    test_scheme = []
-    test_vids = []
-    for vid in data_test:
-        vlength = len(data_test[str(vid)]['label'])
-        seq_num = math.ceil(vlength / seq_len)
-        for i in range(seq_num):
-            test_scheme.append((vid, i * seq_len, min(vlength,(i+1) * seq_len)))
-        test_vids.append((vid, vlength))
-    return test_scheme, test_vids
+    features = []  # bc*seqlen*D
+    labels = []  # bc，每个batch只计算对于特定视频以及concept的loss
+    positions = []  # bc*seqlen，标记序列中每个shot在视频中的绝对位置
+    sample_poses = []  # bc，标记取样点在序列中的相对位置
+    scores = []  # bc*seqlen，标记填充的部分
 
-def get_batch_test(data_test, test_scheme, step, gpu_num, bc, seq_len):
-    # 标记每个序列中的有效长度，并对不足一个batch的部分做padding
-    # 不需要对序列水平上的padding做标记
-    features = []
-    labels = []
-    positions = []
-    scores = []
-    batch_num = gpu_num * bc
-    for i in range(batch_num):
-        pos = (step * batch_num + i) % len(test_scheme)
-        vid, seq_start, seq_end = test_scheme[pos]
-        vlength = len(data_test[str(vid)]['label'])
-        padding_len = seq_len - (seq_end - seq_start)
-        feature = data_test[str(vid)]['feature'][seq_start:seq_end]
-        label = data_test[str(vid)]['label'][seq_start:seq_end]
+    video_id, concept_id, batch = train_scheme[step % len(train_scheme)]
+    for seq_info in batch:
+        vid, cid, seq_start, seq_end, pos_sample, label_shot = seq_info
+        vlength = len(data_train[str(vid)]['label'])
+        feature = data_train[vid]['feature'][seq_start : seq_end]
+        label = data_train[vid]['label'][pos_sample]
         position = np.array(list(range(seq_start, seq_end)))
-        score = np.ones(len(label))
+        score = np.ones(len(position))
+        padding_len = hp.seq_len - (seq_end - seq_start)
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_FEATURE))
-            label_pad = np.zeros((padding_len, D_OUTPUT))
             position_pad = np.array([vlength] * padding_len)
             score_pad = np.zeros(padding_len)
-            feature = np.vstack((feature, feature_pad))
-            label = np.vstack((label, label_pad))
-            position = np.hstack((position, position_pad))
-            score = np.hstack((score, score_pad))
+            if seq_start == 0:  # 在左端填充
+                feature = np.vstack((feature_pad, feature))
+                position = np.hstack((position_pad, position))
+                score = np.hstack((score_pad, score))
+            else:  # 在右端填充
+                feature = np.vstack((feature, feature_pad))
+                position = np.hstack((position, position_pad))
+                score = np.hstack((score, score_pad))
         features.append(feature)
         labels.append(label)
         positions.append(position)
+        sample_poses.append(pos_sample - seq_start)
         scores.append(score)
     features = np.array(features)
     labels = np.array(labels)
     positions = np.array(positions)
+    sample_poses = np.array(sample_poses)
     scores = np.array(scores)
-    return features, labels, positions, scores
+
+    return features, labels, positions, sample_poses, scores
+
+def test_scheme_build_cc(data_test, hp):
+    # 对视频中的每个shot生成对应的序列索引即可
+    test_scheme = []
+    test_vids = []
+    # seq_num = 0  # 测试时同一个batch中的序列没有相互联系，可以混合来自不同视频的序列，故只在所有视频的最后做padding
+    for vid in data_test:
+        vlength = len(data_test[vid]['label'])
+        # seq_num += vlength
+        for pos_sample in range(vlength):
+            seq_start = pos_sample - int(hp.seq_len / 2)
+            seq_end = seq_start + hp.seq_len
+            seq_start = max(0, seq_start)
+            seq_end = min(vlength, seq_end)
+            test_scheme.append((vid, seq_start, seq_end, pos_sample))
+        test_vids.append((vid, vlength))
+
+    # # batch-level padding
+    # bs = hp.gpu_num * hp.bc
+    # seq_padding_num = math.ceil(seq_num / bs) * bs - len(test_scheme)
+    # padding_seq = (list(data_test.keys())[0], 0, hp.seq_len, int(hp.seq_len / 2))
+    # for i in range(seq_padding_num):
+    #     test_scheme.append(padding_seq)
+    return test_scheme, test_vids
+
+def get_batch_test_cc(data_test, test_scheme, step, hp):
+    # 按照ts中的索引生成序列，在batch-level & sequence-level上做padding
+    features = []  # bc*seqlen*D
+    positions = []  # bc*seqlen，标记序列中每个shot在视频中的绝对位置
+    sample_poses = []  # bc，标记取样点在序列中的相对位置
+    scores = []  # bc*seqlen，标记填充的部分
+
+    bs = hp.gpu_num * hp.bc
+    for i in range(bs):
+        seq_pos = (step * bs + i) % len(test_scheme)  # batch-level padding
+        vid, seq_start, seq_end, pos_sample = test_scheme[seq_pos]
+        vlength = len(data_test[str(vid)]['label'])
+        feature = data_test[vid]['feature'][seq_start: seq_end]
+        position = np.array(list(range(seq_start, seq_end)))
+        score = np.ones(len(position))
+        padding_len = hp.seq_len - (seq_end - seq_start)
+        if padding_len > 0:
+            feature_pad = np.zeros((padding_len, D_FEATURE))
+            position_pad = np.array([vlength] * padding_len)
+            score_pad = np.zeros(padding_len)
+            if seq_start == 0:  # 在左端填充
+                feature = np.vstack((feature_pad, feature))
+                position = np.hstack((position_pad, position))
+                score = np.hstack((score_pad, score))
+            else:  # 在右端填充
+                feature = np.vstack((feature, feature_pad))
+                position = np.hstack((position, position_pad))
+                score = np.hstack((score, score_pad))
+        features.append(feature)
+        positions.append(position)
+        sample_poses.append(pos_sample - seq_start)
+        scores.append(score)
+    features = np.array(features)
+    positions = np.array(positions)
+    sample_poses = np.array(sample_poses)
+    scores = np.array(scores)
+
+    return features, positions, sample_poses, scores
 
 def _variable_on_cpu(name, shape, initializer):
     with tf.device('/cpu:0'):
@@ -305,13 +357,11 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss(logits,labels):
-    # logits & labels: bc*seq_len*48
-    # 对每个concept，计算序列中所有clip的NCE-loss，对所有concept、所有序列求均值
-    logits = tf.transpose(logits, perm=(0,2,1))  # bc*48*seq_len
-    logits = tf.reshape(logits, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
-    labels = tf.transpose(labels, perm=(0,2,1))
-    labels = tf.reshape(labels, shape=(-1, hp.seq_len))
+def tower_loss_cc(logits,labels):
+    # logits: bc*48, labels: bc*48
+    # 取logits中特定concept对应的行，与labels计算NCE-Loss
+    logits = tf.transpose(logits, perm=(1, 0))  # 48*bc
+    labels = tf.transpose(labels, perm=(1, 0))  # 48*bc
     labels_binary = tf.cast(tf.cast(labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
     nce_pos = tf.reduce_sum(tf.exp(labels_binary * logits), axis=1)  # 分子
     nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
@@ -414,60 +464,6 @@ def evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts):
     F1_values = np.array(F1_values)
     return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
 
-def evaluation_qualify(pred_scores, query_summary, Tags, test_vids, concepts, hp):
-    # 首先在每个输出序列中选择一部分作为候选，然后在全局的候选集里选出最终的预测
-    preds_c = pred_scores[0]
-    for i in range(1, len(pred_scores)):
-        preds_c = np.vstack((preds_c, pred_scores[i]))
-    pos = 0
-    PRE_values = []
-    REC_values = []
-    F1_values = []
-    for i in range(len(test_vids)):
-        vid, vlength = test_vids[i]
-        summary = query_summary[str(vid)]
-        hl_num_seq = math.ceil(hp.seq_len * 0.2)  # 每个序列中选20%
-        hl_num_video = math.ceil(vlength * 0.02)
-        predictions = preds_c[pos: pos + vlength]
-        pos += vlength
-        for query in summary:
-            shots_gt = summary[query]
-            c1, c2 = query.split('_')
-            ind1 = concepts.index(c1)
-            ind2 = concepts.index(c2)
-            scores_ovr = (predictions[:,ind1] + predictions[:,ind2]).reshape((-1))
-
-            # 从每个输出序列中选择候选shot，再从候选集里选出最后的预测
-            video_pos = 0
-            candidate = np.zeros((0, 2))
-            while video_pos < vlength:
-                scores_seq = scores_ovr[video_pos : video_pos + hp.seq_len]
-                index_seq = np.argsort(scores_seq)[-hl_num_seq : ] + video_pos
-                candidate_seq = scores_ovr[index_seq]
-                index_seq = index_seq.reshape((-1,1))
-                candidate_seq = candidate_seq.reshape((-1,1))
-                candidate_seq = np.concatenate((candidate_seq, index_seq), axis=1)  # seqlen*2
-                candidate = np.vstack((candidate, candidate_seq))
-                video_pos += hp.seq_len
-            candidate = candidate[candidate[:, 0].argsort()]
-            shots_pred = candidate[-hl_num_video : , 1]
-            shots_pred.sort()
-            shots_pred = shots_pred.astype(int)
-
-            # compute
-            sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
-            weight = shot_matching(sim_mat)
-            precision = weight / len(shots_pred)
-            recall = weight / len(shots_gt)
-            f1 = 2 * precision * recall / (precision + recall)
-            PRE_values.append(precision)
-            REC_values.append(recall)
-            F1_values.append(f1)
-    PRE_values = np.array(PRE_values)
-    REC_values = np.array(REC_values)
-    F1_values = np.array(F1_values)
-    return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
-
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
     init_lr: initial learning rate. scalar.
@@ -500,11 +496,10 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         global_step = tf.train.get_or_create_global_step()
         # placeholders
         features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_FEATURE))
-        labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_OUTPUT))
+        labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, D_OUTPUT))
         positions_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
+        sample_pos_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, ))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + CONCEPT_NUM))
-        scores_tgt_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
-        txt_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_TXT_EMB))
         img_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_IMG_EMB))
         dropout_holder = tf.placeholder(tf.float32, shape=())
         training_holder = tf.placeholder(tf.bool, shape=())
@@ -523,17 +518,16 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 features = features_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 labels = labels_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 positions = positions_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
+                sample_poses = sample_pos_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 scores_src = scores_src_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
-                scores_tgt = scores_tgt_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
-                txt_emb = txt_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # predict concept distribution
-                logits = transformer(features, labels, positions, scores_src, scores_tgt, txt_emb, img_emb,
+                logits = transformer(features, positions, sample_poses, scores_src, img_emb,
                                      dropout_holder, training_holder, hp)  # 输入的shot在所有concept上的相关性分布
                 logits_list.append(logits)
 
-                loss, loss_ob = tower_loss(logits,labels)
+                loss, loss_ob = tower_loss_cc(logits,labels)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -561,9 +555,9 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
-        train_scheme = train_scheme_build(data_train, hp.seq_len)
-        test_scheme, test_vids = test_scheme_build(data_test, hp.seq_len)
-        epoch_step = math.ceil(len(train_scheme) / (hp.gpu_num * hp.bc))
+        train_scheme = train_scheme_build_cc(data_train, hp)
+        test_scheme, test_vids = test_scheme_build_cc(data_test, hp)
+        epoch_step = len(train_scheme)
         max_test_step = math.ceil(len(test_scheme) / (hp.gpu_num * hp.bc))
 
         # concept embedding processing
@@ -581,16 +575,14 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         ob_loss = []
         timepoint = time.time()
         for step in range(hp.maxstep):
-            features_b, labels_b, positions_b, scores_b = get_batch_train(data_train, train_scheme, step, hp.gpu_num, hp.bc, hp.seq_len)
+            features_b, labels_b, positions_b, sample_poses_b, scores_b = get_batch_train_cc(data_train, train_scheme, step, hp)
             scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
-            scores_tgt_b = scores_b
             observe = sess.run([train_op] + loss_list + logits_list + loss_ob_list,
                                feed_dict={features_holder: features_b,
                                           labels_holder: labels_b,
                                           positions_holder: positions_b,
+                                          sample_pos_holder: sample_poses_b,
                                           scores_src_holder: scores_src_b,
-                                          scores_tgt_holder: scores_tgt_b,
-                                          txt_emb_holder: txt_emb_b,
                                           img_emb_holder: img_emb_b,
                                           dropout_holder: hp.dropout,
                                           training_holder: True})
@@ -603,7 +595,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
                 if step == 0 and test_mode == 0:
                     continue
-                train_scheme = train_scheme_build(data_train, hp.seq_len)  # shuffle train scheme
+                train_scheme = train_scheme_build_cc(data_train, hp)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)
@@ -617,22 +609,19 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_scores = []  # 每个batch输出的预测得分
                 for test_step in range(max_test_step):
-                    features_b, labels_b, positions_b, scores_b = get_batch_test(data_test, test_scheme, test_step, hp.gpu_num, hp.bc, hp.seq_len)
+                    features_b, positions_b, sample_poses_b, scores_b = get_batch_test_cc(data_test, test_scheme, test_step, hp)
                     scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
-                    scores_tgt_b = scores_b
                     logits_temp_list = sess.run(logits_list, feed_dict={features_holder: features_b,
                                                                         labels_holder: labels_b,
                                                                         positions_holder: positions_b,
+                                                                        sample_pos_holder: sample_poses_b,
                                                                         scores_src_holder: scores_src_b,
-                                                                        scores_tgt_holder: scores_tgt_b,
-                                                                        txt_emb_holder: txt_emb_b,
                                                                         img_emb_holder: img_emb_b,
                                                                         dropout_holder: hp.dropout,
                                                                         training_holder: False})
                     for preds in logits_temp_list:
                         pred_scores.append(preds.reshape((-1, D_OUTPUT)))
-                # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                p, r, f = evaluation_qualify(pred_scores, query_summary, Tags, test_vids, concepts, hp)
+                p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
 
                 if test_mode == 1:
@@ -654,8 +643,6 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
         # saver_overall.save(sess, model_path)
         logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
-
-
 
 def main(self):
     # load data
