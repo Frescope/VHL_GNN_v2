@@ -13,7 +13,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_trans2_continuous_context_transformer import transformer
+from Test_trans2_cc2_transformer import transformer
 import networkx as nx
 
 class Path:
