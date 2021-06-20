@@ -540,7 +540,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # predict concept distribution
-                logits = transformer(features, labels, positions, sample_poses, scores_src, img_emb,
+                logits = transformer(features, positions, sample_poses, scores_src, img_emb,
                                      dropout_holder, training_holder, hp)  # 输入的shot在所有concept上的相关性分布
                 logits_list.append(logits)
 
