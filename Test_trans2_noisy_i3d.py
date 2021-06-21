@@ -607,7 +607,7 @@ def main(self):
 
     # evaluate all videos in turn
     for kfold in range(4):
-        if kfold < 2:
+        if kfold < 3:
             continue
         # split data
         data_train = {}
@@ -637,7 +637,7 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
-            if kfold == 2 and i < 1:
+            if i < 2:
                 continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
