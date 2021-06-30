@@ -83,9 +83,8 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
             outputs = mask(outputs, type="future")
 
         # softmax
-        # outputs = tf.zeros_like(outputs)  # attention权重全部相等
         outputs = tf.nn.softmax(outputs)
-        # outputs = tf.zeros_like(outputs)  # 没有attention输出
+        attention = outputs
 
         # dropout
         outputs = tf.layers.dropout(outputs, rate=dropout_rate, training=training)
@@ -93,7 +92,7 @@ def scaled_dot_product_attention(Q, K, V, key_masks,
         # weighted sum (context vectors)
         outputs = tf.matmul(outputs, V)  # (N, T_q, d_v)
 
-    return outputs
+    return outputs, attention
 
 def ln(inputs, epsilon=1e-8, scope="ln"):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
@@ -126,7 +125,7 @@ def multihead_attention(queries, keys, values, key_masks,
         V_ = tf.concat(tf.split(V, num_heads, axis=2), axis=0)  # (h*N, T_k, d_model/h)
 
         # Attention
-        outputs = scaled_dot_product_attention(Q_, K_, V_, key_masks, causality, dropout_rate, training)
+        outputs, attention = scaled_dot_product_attention(Q_, K_, V_, key_masks, causality, dropout_rate, training)
 
         # Restore shape
         outputs = tf.concat(tf.split(outputs, num_heads, axis=0), axis=2)  # (N, T_q, d_model)
@@ -138,7 +137,7 @@ def multihead_attention(queries, keys, values, key_masks,
         # Normalize
         outputs = ln(outputs)
 
-    return outputs
+    return outputs, attention
 
 def ff(inputs, num_units, dropout_rate, scope="positionwise_feedforward"):
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
@@ -161,9 +160,10 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
     with tf.variable_scope("encoder", reuse=tf.AUTO_REUSE):
         enc = input_nodes
         block_outputs = []
+        attention_outputs = []
         for i in range(hp.num_blocks):
             with tf.variable_scope("num_blocks_{}".format(i), reuse=tf.AUTO_REUSE):
-                enc = multihead_attention(queries=enc,
+                enc, attention = multihead_attention(queries=enc,
                                              keys=enc,
                                              values=enc,
                                              key_masks=src_masks,
@@ -173,28 +173,9 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
                                              causality=False)
                 enc = ff(enc, num_units=[D_FF, D_MODEL], dropout_rate=drop_out)
                 block_outputs.append(enc)
+                attention_outputs.append(attention)
         memory = enc
-
-        # block_outputs = tf.concat(block_outputs, axis=0)
-        # [bc,seq,d] = memory.get_shape().as_list()
-        # block_outputs = tf.reshape(block_outputs, shape=[hp.num_blocks, bc, seq, d])
-        # block_outputs = tf.transpose(block_outputs, perm=[1,2,0,3])  # bc*seq*blocknum*d
-        # block_outputs = tf.reshape(block_outputs, shape=[bc*seq, hp.num_blocks, d])  # (bc*seq)*blocknum*d
-        # block_mask = tf.math.equal(tf.convert_to_tensor(np.ones([bc*seq, hp.num_blocks])), 0)
-        # block_agg = multihead_attention(queries=block_outputs,
-        #                                 keys=block_outputs,
-        #                                 values=block_outputs,
-        #                                 key_masks=block_mask,
-        #                                 num_heads=4,
-        #                                 dropout_rate=0,
-        #                                 training=training,
-        #                                 causality=False)
-        # block_agg = ff(block_agg, num_units=[D_FF, D_MODEL], dropout_rate=0)
-        # block_agg = tf.reduce_mean(block_agg, axis=1)  # (bc*seq)*d
-        # block_agg = tf.reshape(block_agg, shape=[bc, seq, d])
-        # memory = block_agg
-
-        return memory
+        return memory, attention_outputs
 
 def transformer(features, positions, sample_poses, scores_src, img_emb, drop_out, training, hp):
     # 对前端和末端填充的部分position_encoding填零
@@ -211,7 +192,7 @@ def transformer(features, positions, sample_poses, scores_src, img_emb, drop_out
         src_masks = tf.math.equal(scores_src, 0)  # 标记输入的节点序列内哪些是padding部分
 
         # encoding & decoding
-        memory = encoder(input_nodes, src_masks, drop_out, training, hp)
+        memory, attention_outputs = encoder(input_nodes, src_masks, drop_out, training, hp)
         decoder_output = memory[:, :hp.seq_len, :]
 
         c_num = img_emb.get_shape().as_list()[1]
@@ -222,8 +203,8 @@ def transformer(features, positions, sample_poses, scores_src, img_emb, drop_out
 
         target = tf.one_hot(indices=sample_poses, depth=hp.seq_len, on_value=1, off_value=0)  # bc*seqlen
         target = tf.cast(tf.tile(tf.expand_dims(target, axis=-1), [1,1,c_num]), dtype=tf.float32)  # bc*seqlen*48,每个序列只有取样点对应的向量全为零
-        sample_logits = tf.reduce_sum(logits * target, axis=1)  # bc*48
-        return sample_logits, logits
+        logits = tf.reduce_sum(logits * target, axis=1)  # bc*48
+        return logits, attention_outputs
 
 
 

@@ -1,6 +1,5 @@
-# 连续片段组成的序列+NCE Loss
-# 对每个样本取其周围的节点构成连续序列，只取样本对应的位置作为输出，保证batch中的正负样本比例，对每个concept计算一组loss并取平均
-
+# continuous context 2
+# 每个batch使用全部的concept计算loss
 import os
 import time
 import numpy as np
@@ -13,7 +12,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_trans2_cc2_transformer import transformer
+from Test_attention_cc2_transformer import transformer
 import networkx as nx
 
 class Path:
@@ -21,21 +20,19 @@ class Path:
     parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=51,type=int)
-    parser.add_argument('--bc',default=50,type=int)
+    parser.add_argument('--seq_len',default=25,type=int)
+    parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=10e-6, type=float)
+    parser.add_argument('--lr_noam', default=50e-6, type=float)
     parser.add_argument('--warmup', default=4000, type=int)
     parser.add_argument('--maxstep', default=30000, type=int)
-    parser.add_argument('--pos_ratio', default=0.4, type=float)
-    parser.add_argument('--loss_bc_ratio', default=0.6, type=float)
+    parser.add_argument('--pos_ratio', default=0.5, type=float)
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--eval_epoch',default=3,type=int)
-    parser.add_argument('--observe', default=0, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -84,7 +81,7 @@ else:
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
-    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/utc_SA/'
+    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/attention_cc2/S2448-E9-L3.279559-F0.474'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -246,8 +243,7 @@ def get_batch_train_cc(data_train, train_scheme, step, hp):
     # 按照ts给出的每个batch中的序列抽取特征，在两端做padding
 
     features = []  # bc*seqlen*D
-    labels = []  # bc*seqlen，计算每个序列的整体loss作为辅助
-    sample_labels = []  # bc*48，每个batch只计算对于特定片段的loss
+    labels = []  # bc，每个batch只计算对于特定视频以及concept的loss
     positions = []  # bc*seqlen，标记序列中每个shot在视频中的绝对位置
     sample_poses = []  # bc，标记取样点在序列中的相对位置
     scores = []  # bc*seqlen，标记填充的部分
@@ -257,40 +253,34 @@ def get_batch_train_cc(data_train, train_scheme, step, hp):
         vid, cid, seq_start, seq_end, pos_sample, label_shot = seq_info
         vlength = len(data_train[str(vid)]['label'])
         feature = data_train[vid]['feature'][seq_start : seq_end]
-        label = data_train[vid]['label'][seq_start : seq_end]
-        sample_label = data_train[vid]['label'][pos_sample]
+        label = data_train[vid]['label'][pos_sample]
         position = np.array(list(range(seq_start, seq_end)))
         score = np.ones(len(position))
         padding_len = hp.seq_len - (seq_end - seq_start)
         if padding_len > 0:
             feature_pad = np.zeros((padding_len, D_FEATURE))
-            label_pad = np.zeros((padding_len, D_OUTPUT))
             position_pad = np.array([vlength] * padding_len)
             score_pad = np.zeros(padding_len)
             if seq_start == 0:  # 在左端填充
                 feature = np.vstack((feature_pad, feature))
-                label = np.vstack((label_pad, label))
                 position = np.hstack((position_pad, position))
                 score = np.hstack((score_pad, score))
             else:  # 在右端填充
                 feature = np.vstack((feature, feature_pad))
-                label = np.vstack((label, label_pad))
                 position = np.hstack((position, position_pad))
                 score = np.hstack((score, score_pad))
         features.append(feature)
         labels.append(label)
-        sample_labels.append(sample_label)
         positions.append(position)
         sample_poses.append(pos_sample - seq_start)
         scores.append(score)
     features = np.array(features)
     labels = np.array(labels)
-    sample_labels = np.array(sample_labels)
     positions = np.array(positions)
     sample_poses = np.array(sample_poses)
     scores = np.array(scores)
 
-    return features, sample_labels, labels, positions, sample_poses, scores
+    return features, labels, positions, sample_poses, scores
 
 def test_scheme_build_cc(data_test, hp):
     # 对视频中的每个shot生成对应的序列索引即可
@@ -367,32 +357,19 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss_cc(sample_logits, sample_labels, logits, labels, hp):
+def tower_loss_cc(logits,labels):
     # logits: bc*48, labels: bc*48
     # 取logits中特定concept对应的行，与labels计算NCE-Loss
-    sample_logits = tf.transpose(sample_logits, perm=(1, 0))  # 48*bc
-    sample_labels = tf.transpose(sample_labels, perm=(1, 0))  # 48*bc
-    sp_labels_binary = tf.cast(tf.cast(sample_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-    sp_nce_pos = tf.reduce_sum(tf.exp(sp_labels_binary * sample_logits), axis=1)  # 分子
-    sp_nce_pos -= tf.reduce_sum((1 - sp_labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    sp_nce_all = tf.reduce_sum(tf.exp(sample_logits), axis=1)   # 分母
-    sp_nce_loss = -tf.log((sp_nce_pos / sp_nce_all) + 1e-5)
-    sp_loss = tf.reduce_mean(sp_nce_loss)
-
-    logits = tf.transpose(logits, perm=(0, 2, 1))  # bc*48*seq_len
-    logits = tf.reshape(logits, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
-    labels = tf.transpose(labels, perm=(0, 2, 1))
-    labels = tf.reshape(labels, shape=(-1, hp.seq_len))
+    logits = tf.transpose(logits, perm=(1, 0))  # 48*bc
+    labels = tf.transpose(labels, perm=(1, 0))  # 48*bc
     labels_binary = tf.cast(tf.cast(labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
     nce_pos = tf.reduce_sum(tf.exp(labels_binary * logits), axis=1)  # 分子
     nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(logits), axis=1)  # 分母
+    nce_all = tf.reduce_sum(tf.exp(logits), axis=1)   # 分母
     nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
     loss = tf.reduce_mean(nce_loss)
 
-    ratio = hp.loss_bc_ratio
-    total_loss = tf.reduce_mean(ratio * sp_nce_loss + (1 - ratio) * loss)
-    return total_loss, [sp_loss, loss]
+    return loss, [nce_loss, nce_pos, nce_all]
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -534,8 +511,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         global_step = tf.train.get_or_create_global_step()
         # placeholders
         features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_FEATURE))
-        labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_OUTPUT))
-        sample_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, D_OUTPUT))
+        labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, D_OUTPUT))
         positions_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
         sample_pos_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num,))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + CONCEPT_NUM))
@@ -550,26 +526,24 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         # graph building
         tower_grads_train = []
         logits_list = []
-        sample_logits_list = []
         loss_list = []
         loss_ob_list = []
+        attention_list = []
         for gpu_index in range(hp.gpu_num):
             with tf.device('/gpu:%d' % gpu_index):
                 features = features_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 labels = labels_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
-                sample_labels = sample_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 positions = positions_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 sample_poses = sample_pos_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 scores_src = scores_src_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # predict concept distribution
-                sample_logits, logits = transformer(features, positions, sample_poses, scores_src, img_emb,
-                                                    dropout_holder, training_holder, hp)  # 输入的shot在所有concept上的相关性分布
-                sample_logits_list.append(sample_logits)
+                logits, attention = transformer(features, positions, sample_poses, scores_src, img_emb,
+                                     dropout_holder, training_holder, hp)  # 输入的shot在所有concept上的相关性分布
                 logits_list.append(logits)
 
-                loss, loss_ob = tower_loss_cc(sample_logits, sample_labels, logits, labels, hp)
+                loss, loss_ob = tower_loss_cc(logits,labels)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -577,6 +551,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
+                attention_list += attention
         train_op = tf.no_op()
 
         # session
@@ -614,8 +589,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         ob_loss = []
         timepoint = time.time()
         for step in range(hp.maxstep):
-            features_b, sample_labels_b, labels_b, positions_b, sample_poses_b, scores_b = get_batch_train_cc(
-                data_train, train_scheme, step, hp)
+            features_b, labels_b, positions_b, sample_poses_b, scores_b = get_batch_train_cc(data_train, train_scheme, step, hp)
             scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
             observe = sess.run([train_op] + loss_list + logits_list + loss_ob_list,
                                feed_dict={features_holder: features_b,
@@ -642,11 +616,11 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
-                pred_scores = []  # 每个batch输出的预测得分
+                atte_all = []  # 每个batch的attention
                 for test_step in range(max_test_step):
                     features_b, positions_b, sample_poses_b, scores_b = get_batch_test_cc(data_test, test_scheme, test_step, hp)
                     scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
-                    logits_temp_list = sess.run(logits_list, feed_dict={features_holder: features_b,
+                    atte_batch = sess.run(attention_list, feed_dict={features_holder: features_b,
                                                                         labels_holder: labels_b,
                                                                         positions_holder: positions_b,
                                                                         sample_pos_holder: sample_poses_b,
@@ -654,12 +628,13 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                                                                         img_emb_holder: img_emb_b,
                                                                         dropout_holder: hp.dropout,
                                                                         training_holder: False})
-                    for preds in logits_temp_list:
-                        pred_scores.append(preds.reshape((-1, D_OUTPUT)))
-                p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                return f
-    return 0
+                    atte_batch = np.array(atte_batch)
+                    atte_batch = atte_batch.reshape((hp.num_blocks, hp.num_heads, hp.bc, 73, 73))
+                    atte_batch = np.transpose(atte_batch, (2, 0, 1, 3, 4))
+                    atte_all.append(atte_batch)
+                atte_all = np.array(atte_all).reshape((-1, hp.num_blocks, hp.num_heads, 73, 73))
+                return atte_all
+    return None
 
 def main(self):
     # load data
@@ -668,54 +643,36 @@ def main(self):
     queries, query_summary = load_query_summary(QUERY_SUM_BASE)
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
-    # evaluate all videos in turn
-    model_scores = {}
-    for kfold in range(4):
-        # split data
-        data_train = {}
-        data_valid = {}
-        data_test = {}
-        data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
-        data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
-        data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
-        data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+    data_train = {}
+    data_valid = {}
+    data_test = {}
+    kfold = 2
+    data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
+    data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
+    data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
+    data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
 
-        # info
-        logging.info('*' * 20 + 'Settings' + '*' * 20)
-        logging.info('K-fold: ' + str(kfold))
-        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
-        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
-        logging.info('WarmUp: ' + str(hp.warmup))
-        logging.info('Noam LR: ' + str(hp.lr_noam))
-        logging.info('Num Heads: ' + str(hp.num_heads))
-        logging.info('Num Blocks: ' + str(hp.num_blocks))
-        logging.info('Batchsize: ' + str(hp.bc))
-        logging.info('Max Steps: ' + str(hp.maxstep))
-        logging.info('Dropout Rate: ' + str(hp.dropout))
-        logging.info('Sequence Length: ' + str(hp.seq_len))
-        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
-        logging.info('*' * 50)
+    # info
+    logging.info('*' * 20 + 'Settings' + '*' * 20)
+    logging.info('K-fold: ' + str(kfold))
+    logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
+    logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+    logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
+    logging.info('WarmUp: ' + str(hp.warmup))
+    logging.info('Noam LR: ' + str(hp.lr_noam))
+    logging.info('Num Heads: ' + str(hp.num_heads))
+    logging.info('Num Blocks: ' + str(hp.num_blocks))
+    logging.info('Batchsize: ' + str(hp.bc))
+    logging.info('Max Steps: ' + str(hp.maxstep))
+    logging.info('Dropout Rate: ' + str(hp.dropout))
+    logging.info('Sequence Length: ' + str(hp.seq_len))
+    logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+    logging.info('*' * 50)
 
-        # repeat
-        scores = []
-        for i in range(hp.repeat):
-            model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            models_to_restore = model_search(model_save_dir, observe=hp.observe)
-            for i in range(len(models_to_restore)):
-                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
-                model_path = models_to_restore[i]
-                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 model_path)
-                scores.append(f1)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores
-    scores_all = 0
-    for vid in model_scores:
-        scores = model_scores[vid]
-        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
-                     (vid, np.array(scores).mean(), str(scores)))
-        scores_all += np.array(scores).mean()
-    logging.info('Overall Results: %.3f' % (scores_all / 4))
+    attention = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
+                            CKPT_MODEL_PATH)
+    np.save(r'/data/linkang/model_HL_v4/attention_cc2/attention_cc2.npy', attention)
+    print('Done !')
 
 if __name__ == '__main__':
     tf.app.run()
