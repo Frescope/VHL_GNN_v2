@@ -34,6 +34,8 @@ class Path:
     parser.add_argument('--multimask',default=0, type=int)
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--eval_epoch',default=3,type=int)
+    parser.add_argument('--start', default='00', type=str)
+    parser.add_argument('--end', default='', type=str)
 
 hparams = Path()
 parser = hparams.parser
@@ -678,7 +680,11 @@ def main(self):
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
     # evaluate all videos in turn
+    kfold_start = int(int(hp.start) / 10)
+    repeat_start = int(hp.start) % 10
     for kfold in range(4):
+        if kfold < kfold_start:
+            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -707,12 +713,19 @@ def main(self):
 
         # repeat
         for i in range(hp.repeat):
+            if kfold == kfold_start and i < repeat_start:
+                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
             run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
                          model_save_dir, 0)
-            logging.info('*' * 60)
+            logging.info('*' * 60) 
+            if len(hp.end) > 0:
+                kfold_end = int(int(hp.end) / 10)
+                repeat_end = int(hp.end) % 10
+                if kfold >= kfold_end and i >= repeat_end:
+                    return
         logging.info('^' * 60 + '\n')
 
 if __name__ == '__main__':

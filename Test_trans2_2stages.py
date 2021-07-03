@@ -379,7 +379,7 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, h
     return loss, [concept_loss, summary_loss]
 
 def average_gradients(tower_grads):
-    average_grads = []
+    average_grads = []     
     for grad_and_vars in zip(*tower_grads):
         grads = []
         for g, _ in grad_and_vars:
