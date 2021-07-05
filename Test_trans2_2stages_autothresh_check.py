@@ -470,9 +470,11 @@ def evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, t
             scores_indexes = np.hstack((scores_indexes, candidate))  # N*2，候选集及其原索引
 
             # make summary
-            shots_pred_ind = np.where(scores_indexes[:, 0] > threshold)[0]
-            shots_pred = scores_indexes[:, 1][shots_pred_ind].astype(int)
-            shots_pred.sort()
+            # shots_pred_ind = np.where(scores_indexes[:, 0] > threshold)[0]
+            # shots_pred = scores_indexes[:, 1][shots_pred_ind].astype(int)
+            shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
+            shots_pred = shots_pred[-hl_num_s2:, 1].astype(int)
+            shots_pred.sort() 
 
             # compute
             sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
