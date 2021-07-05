@@ -17,10 +17,10 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=100,type=int)
+    parser.add_argument('--seq_len',default=25,type=int)
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
@@ -445,7 +445,7 @@ def evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, t
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
         hl_num_s1 = math.ceil(vlength * 0.2)  # stage 1, 每组concept_logits中选20%进入候选集
-        hl_num_s2 = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
+        hl_num_s2 = math.ceil(vlength * threshold)  # stage 2
         c_predictions = c_logits[pos : pos + vlength]
         s_predictions = s_logits[pos : pos + vlength]
         pos += vlength
@@ -474,7 +474,7 @@ def evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, t
             # shots_pred = scores_indexes[:, 1][shots_pred_ind].astype(int)
             shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
             shots_pred = shots_pred[-hl_num_s2:, 1].astype(int)
-            shots_pred.sort() 
+            shots_pred.sort()
 
             # compute
             sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
@@ -713,16 +713,16 @@ def main(self):
         data_train = {}
         data_valid = {}
         data_test = {}
-        data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
-        data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
-        data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
-        data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+        data_train[str((3 - kfold) % 4 + 1)] = data[str((3 - kfold) % 4 + 1)]  # 4-3-2-1-4
+        data_train[str((2 - kfold) % 4 + 1)] = data[str((2 - kfold) % 4 + 1)]
+        data_valid[str((1 - kfold) % 4 + 1)] = data[str((1 - kfold) % 4 + 1)]
+        data_test[str((0 - kfold) % 4 + 1)] = data[str((0 - kfold) % 4 + 1)]
 
         # info
         logging.info('*' * 20 + 'Settings' + '*' * 20)
         logging.info('K-fold: ' + str(kfold))
-        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+        logging.info('Train: %d, %d' % ((3 - kfold) % 4 + 1, (2 - kfold) % 4 + 1))
+        logging.info('Valid: %d  Test: %d' % ((1 - kfold) % 4 + 1, (0 - kfold) % 4 + 1))
         logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
         logging.info('WarmUp: ' + str(hp.warmup))
         logging.info('Noam LR: ' + str(hp.lr_noam))

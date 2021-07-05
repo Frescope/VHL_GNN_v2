@@ -21,7 +21,7 @@ class Path:
     parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=100,type=int)
+    parser.add_argument('--seq_len',default=25,type=int)
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
@@ -429,6 +429,81 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
             sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
     return sim_mat
 
+# def evaluation_2stages_autothresh(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries):
+#     # 首先根据两组concept_logits选出一组候选集，然后从候选里根据summary_logits做最终预测
+#     c_logits = concept_lists[0]  # (bc*seq_len) * 48
+#     s_logits = summary_lists[0]  # (bc*seq_len) * 45
+#     for i in range(1, len(concept_lists)):
+#         c_logits = np.vstack((c_logits, concept_lists[i]))
+#         s_logits = np.vstack((s_logits, summary_lists[i]))
+#
+#     max_p = 0
+#     max_r = 0
+#     max_f = 0
+#     max_thresh = 0
+#     ratio = hp.pred_concept_ratio
+#     for step in range(15, 26):
+#         rank_ratio = step / 1000  # 预测长度占比
+#         pos = 0
+#         PRE_values = []
+#         REC_values = []
+#         F1_values = []
+#         THRESHOLDS = []
+#         for i in range(len(test_vids)):
+#             vid, vlength = test_vids[i]
+#             summary = query_summary[str(vid)]
+#             hl_num_s1 = math.ceil(vlength * 0.2)  # stage 1, 每组concept_logits中选20%进入候选集
+#             hl_num_s2 = math.ceil(vlength * rank_ratio)  # stage 2
+#             c_predictions = c_logits[pos: pos + vlength]
+#             s_predictions = s_logits[pos: pos + vlength]
+#             pos += vlength
+#             for query in summary:
+#                 shots_gt = summary[query]
+#                 q_ind = queries[vid].index(query)
+#                 c1, c2 = query.split('_')
+#                 c1_ind = concepts.index(c1)
+#                 c2_ind = concepts.index(c2)
+#                 c1_logits = c_predictions[:, c1_ind]
+#                 c2_logits = c_predictions[:, c2_ind]
+#                 q_logits = s_predictions[:, q_ind]
+#                 scores = (c1_logits + c2_logits) / 2 * ratio + q_logits * (1 - ratio)
+#
+#                 # find candidates
+#                 c1_candidate = set(np.argsort(c1_logits)[-hl_num_s1:])
+#                 c2_candidate = set(np.argsort(c2_logits)[-hl_num_s1:])
+#                 candidate = list(c1_candidate | c2_candidate)
+#                 candidate.sort()
+#                 candidate = np.array(candidate).reshape((-1, 1))
+#                 scores_indexes = scores[candidate].reshape((-1, 1))
+#                 scores_indexes = np.hstack((scores_indexes, candidate))  # N*2，候选集及其原索引
+#
+#                 # make summary
+#                 shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
+#                 thresh = shots_pred[-hl_num_s2, 0]
+#                 shots_pred = shots_pred[-hl_num_s2:, 1].astype(int)
+#                 shots_pred.sort()
+#
+#                 # compute
+#                 sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+#                 weight = shot_matching(sim_mat)
+#                 precision = weight / len(shots_pred)
+#                 recall = weight / len(shots_gt)
+#                 f1 = 2 * precision * recall / (precision + recall)
+#                 PRE_values.append(precision)
+#                 REC_values.append(recall)
+#                 F1_values.append(f1)
+#                 THRESHOLDS.append(thresh)
+#         PRE_value = np.array(PRE_values).mean()
+#         REC_value = np.array(REC_values).mean()
+#         F1_value = np.array(F1_values).mean()
+#         THRESHOLD = np.array(THRESHOLDS).mean()
+#         if F1_value > max_f:
+#             max_p = PRE_value
+#             max_r = REC_value
+#             max_f = F1_value
+#             max_thresh = THRESHOLD
+#     return max_p, max_r, max_f, max_thresh
+
 def evaluation_2stages_autothresh(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries):
     # 首先根据两组concept_logits选出一组候选集，然后从候选里根据summary_logits做最终预测
     c_logits = concept_lists[0]  # (bc*seq_len) * 48
@@ -440,20 +515,19 @@ def evaluation_2stages_autothresh(concept_lists, summary_lists, query_summary, T
     max_p = 0
     max_r = 0
     max_f = 0
-    max_thresh = 0
+    max_rr = 0
     ratio = hp.pred_concept_ratio
-    for step in range(17, 26):
+    for step in range(14, 25, 2):
         rank_ratio = step / 1000  # 预测长度占比
         pos = 0
         PRE_values = []
         REC_values = []
         F1_values = []
-        THRESHOLDS = []
         for i in range(len(test_vids)):
             vid, vlength = test_vids[i]
             summary = query_summary[str(vid)]
             hl_num_s1 = math.ceil(vlength * 0.2)  # stage 1, 每组concept_logits中选20%进入候选集
-            hl_num_s2 = math.ceil(vlength * rank_ratio)  # stage 2, 最终取2%作为summary
+            hl_num_s2 = math.ceil(vlength * rank_ratio)  # stage 2
             c_predictions = c_logits[pos: pos + vlength]
             s_predictions = s_logits[pos: pos + vlength]
             pos += vlength
@@ -479,7 +553,6 @@ def evaluation_2stages_autothresh(concept_lists, summary_lists, query_summary, T
 
                 # make summary
                 shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
-                thresh = shots_pred[-hl_num_s2, 0]
                 shots_pred = shots_pred[-hl_num_s2:, 1].astype(int)
                 shots_pred.sort()
 
@@ -492,17 +565,15 @@ def evaluation_2stages_autothresh(concept_lists, summary_lists, query_summary, T
                 PRE_values.append(precision)
                 REC_values.append(recall)
                 F1_values.append(f1)
-                THRESHOLDS.append(thresh)
         PRE_value = np.array(PRE_values).mean()
         REC_value = np.array(REC_values).mean()
         F1_value = np.array(F1_values).mean()
-        THRESHOLD = np.array(THRESHOLDS).mean()
         if F1_value > max_f:
             max_p = PRE_value
             max_r = REC_value
             max_f = F1_value
-            max_thresh = THRESHOLD
-    return max_p, max_r, max_f, max_thresh
+            max_rr = rank_ratio
+    return max_p, max_r, max_f, max_rr
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
@@ -740,16 +811,16 @@ def main(self):
         data_train = {}
         data_valid = {}
         data_test = {}
-        data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
-        data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
-        data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
-        data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+        data_train[str((3 - kfold) % 4 + 1)] = data[str((3 - kfold) % 4 + 1)]
+        data_train[str((2 - kfold) % 4 + 1)] = data[str((2 - kfold) % 4 + 1)]
+        data_valid[str((1 - kfold) % 4 + 1)] = data[str((1 - kfold) % 4 + 1)]
+        data_test[str((0 - kfold) % 4 + 1)] = data[str((0 - kfold) % 4 + 1)]
 
         # info
         logging.info('*' * 20 + 'Settings' + '*' * 20)
         logging.info('K-fold: ' + str(kfold))
-        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+        logging.info('Train: %d, %d' % ((3 - kfold) % 4 + 1, (2 - kfold) % 4 + 1))
+        logging.info('Valid: %d  Test: %d' % ((1 - kfold) % 4 + 1, (0 - kfold) % 4 + 1))
         logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
         logging.info('WarmUp: ' + str(hp.warmup))
         logging.info('Noam LR: ' + str(hp.lr_noam))
