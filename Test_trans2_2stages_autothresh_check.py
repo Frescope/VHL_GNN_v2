@@ -746,7 +746,7 @@ def main(self):
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
-                rank_num = float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature'])
+                rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
                 f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
                                  model_path, rank_num)
                 scores.append(f1)
