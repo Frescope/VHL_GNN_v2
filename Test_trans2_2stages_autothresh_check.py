@@ -428,7 +428,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
             sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
     return sim_mat
 
-def evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries,threshold):
+def evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries,rank_num):
     # 首先根据两组concept_logits选出一组候选集，然后从候选里根据summary_logits做最终预测
     c_logits = concept_lists[0]  # (bc*seq_len) * 48
     s_logits = summary_lists[0]  # (bc*seq_len) * 45
@@ -445,7 +445,7 @@ def evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, t
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
         hl_num_s1 = math.ceil(vlength * 0.2)  # stage 1, 每组concept_logits中选20%进入候选集
-        hl_num_s2 = math.ceil(vlength * threshold)  # stage 2
+        hl_num_s2 = rank_num
         c_predictions = c_logits[pos : pos + vlength]
         s_predictions = s_logits[pos : pos + vlength]
         pos += vlength
@@ -554,7 +554,7 @@ def make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp)
     seq_labels = tf.concat(seq_labels, axis=0)
     return seq_logits, seq_labels
 
-def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path):
+def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path, rank_num):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -694,9 +694,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                         summary_lists.append(preds.reshape((-1, D_S_OUTPUT)))
 
                 # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                threshold = float(model_path.split('-')[-2].split('T')[-1])
-                p, r, f = evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries, threshold)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
+                p, r, f = evaluation_2stages_test(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries, rank_num)
+                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f, RN: %d'% (p, r, f, rank_num))
                 return f
     return 0
 
@@ -747,8 +746,9 @@ def main(self):
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
+                rank_num = float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature'])
                 f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 model_path)
+                                 model_path, rank_num)
                 scores.append(f1)
         model_scores[str((kfold + 3) % 4 + 1)] = scores
     scores_all = 0
