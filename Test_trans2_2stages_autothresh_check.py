@@ -717,7 +717,6 @@ def main(self):
         data_valid[str((1 - kfold) % 4 + 1)] = data[str((1 - kfold) % 4 + 1)]
         data_test[str((0 - kfold) % 4 + 1)] = data[str((0 - kfold) % 4 + 1)]
 
-        continue
         # info
         logging.info('*' * 20 + 'Settings' + '*' * 20)
         logging.info('K-fold: ' + str(kfold))
