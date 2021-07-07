@@ -717,6 +717,7 @@ def main(self):
         data_valid[str((1 - kfold) % 4 + 1)] = data[str((1 - kfold) % 4 + 1)]
         data_test[str((0 - kfold) % 4 + 1)] = data[str((0 - kfold) % 4 + 1)]
 
+        continue
         # info
         logging.info('*' * 20 + 'Settings' + '*' * 20)
         logging.info('K-fold: ' + str(kfold))
@@ -746,11 +747,12 @@ def main(self):
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
-                rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
+                # rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
+                rank_num = math.ceil(np.mean(np.sum(data[str((1 - kfold) % 4 + 1)]['summary_label'], axis=0)))
                 f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
                                  model_path, rank_num)
                 scores.append(f1)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores
+        model_scores[str((0 - kfold) % 4 + 1)] = scores
     scores_all = 0
     for vid in model_scores:
         scores = model_scores[vid]
