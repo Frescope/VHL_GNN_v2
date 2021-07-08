@@ -41,8 +41,6 @@ class Path:
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
 
-    parser.add_argument('--rmax', default=0.025, type=float)
-
 hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
@@ -710,8 +708,6 @@ def main(self):
     # evaluate all videos in turn
     model_scores = {}
     for kfold in range(4):
-        if kfold % 2 == 0:
-            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -750,8 +746,7 @@ def main(self):
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
-                # rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
-                rank_num = math.floor(hp.rmax * len(data[str((1 - kfold) % 4 + 1)]['feature']))
+                rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
                 # rank_num = math.ceil(np.mean(np.sum(data[str((1 - kfold) % 4 + 1)]['summary_label'], axis=0)))
                 f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
                                  model_path, rank_num)

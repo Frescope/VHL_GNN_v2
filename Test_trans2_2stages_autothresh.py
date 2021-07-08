@@ -517,7 +517,7 @@ def evaluation_2stages_autothresh(concept_lists, summary_lists, query_summary, T
     max_f = 0
     max_rr = 0
     ratio = hp.pred_concept_ratio
-    for step in range(14, 25, 2):
+    for step in range(16, 27, 2):
         rank_ratio = step / 1000  # 预测长度占比
         pos = 0
         PRE_values = []
