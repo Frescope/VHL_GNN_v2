@@ -17,7 +17,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='3',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=100,type=int)
@@ -32,7 +32,8 @@ class Path:
 
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
-    parser.add_argument('--loss_concept_ratio', default=0.75, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_concept_ratio', default=0.5, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_conpred_ratio', default=0.25, type=float)  # loss中来自conpred_loss的比例
     parser.add_argument('--pred_concept_ratio', default=0.25, type=float)  # prediction中来自concept_logits的比例
 
     parser.add_argument('--repeat',default=3,type=int)
@@ -372,7 +373,7 @@ def tower_loss_2stages(concept_logits, concept_labels, concept_preds, seq_logits
     conpred_label = np.eye(CONCEPT_NUM).reshape((1, CONCEPT_NUM, CONCEPT_NUM))
     conpred_label = np.tile(conpred_label, [hp.bc, 1, 1])
     conpred_label = tf.cast(tf.convert_to_tensor(conpred_label), dtype=tf.float32)
-    concept_preds = tf.clip_by_value(tf.sigmoid(concept_preds), 1e-6, 0.999999)
+    concept_preds = tf.clip_by_value(concept_preds, 1e-6, 0.999999)
     conpred_loss = -conpred_label * (tf.log(concept_preds)) - (1 - conpred_label) * tf.log(1 - concept_preds)
     conpred_loss = tf.reduce_mean(conpred_loss)
 
@@ -384,8 +385,9 @@ def tower_loss_2stages(concept_logits, concept_labels, concept_preds, seq_logits
     nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
     summary_loss = tf.reduce_mean(nce_loss)
 
-    ratio = hp.loss_concept_ratio
-    loss = concept_loss * ratio + summary_loss * (1 - ratio) + conpred_loss
+    r1 = hp.loss_concept_ratio
+    r2 = hp.loss_conpred_ratio
+    loss = concept_loss * r1 + conpred_loss * r2 + summary_loss * (1 - r1 - r2)
     return loss, [concept_loss, summary_loss, conpred_loss]
 
 def average_gradients(tower_grads):
@@ -585,10 +587,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # 整合concept与summary的预测，形成最终预测
-                concept_logits, summary_logits = transformer(features, positions, scores_src, txt_emb, img_emb,
+                concept_logits, concept_preds, summary_logits = transformer(features, positions, scores_src, txt_emb, img_emb,
                                      dropout_holder, training_holder, hp, D_C_OUTPUT, D_S_OUTPUT)
-                concept_preds = concept_logits[:, -CONCEPT_NUM : , :]
-                concept_logits = concept_logits[:, :hp.seq_len, :]
                 concept_preds_list.append(concept_preds)
                 concept_logits_list.append(concept_logits)
                 summary_logits_list.append(summary_logits)

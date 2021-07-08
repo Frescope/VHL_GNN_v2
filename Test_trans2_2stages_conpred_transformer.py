@@ -195,11 +195,13 @@ def transformer(features, positions, scores_src, txt_emb, img_emb, drop_out, tra
         concept_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
         concept_branch = tf.layers.dense(concept_branch, 512, use_bias=True, activation=tf.nn.relu)
         concept_logits = tf.layers.dense(concept_branch, c_num, use_bias=True, activation=None)
-        concept_logits = tf.nn.softmax(concept_logits, axis=1)  # 归一化
+        concept_logits, concept_preds = tf.split(concept_logits, [hp.seq_len, c_num], axis=1)  # 分割成视频节点和concept节点两部分
+        concept_logits = tf.nn.softmax(concept_logits, axis=1)  # 两部分分别做归一化
+        concept_preds = tf.nn.softmax(concept_preds, axis=2)  # 每个concept节点的输出应当只突出自身对应的某一行
 
         summary_branch = tf.layers.dense(decoder_output[:, :hp.seq_len, :], 1024, use_bias=True, activation=tf.nn.relu)
         summary_branch = tf.layers.dense(summary_branch, 512, use_bias=True, activation=tf.nn.relu)
         summary_logits = tf.layers.dense(summary_branch, s_num, use_bias=True, activation=None)
         summary_logits = tf.nn.softmax(summary_logits, axis=1)
 
-        return concept_logits, summary_logits
+        return concept_logits, concept_preds, summary_logits
