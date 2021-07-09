@@ -385,8 +385,9 @@ def tower_loss_2stages(concept_logits, concept_labels, concept_preds, seq_logits
     nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
     summary_loss = tf.reduce_mean(nce_loss)
 
-    ratio = hp.loss_concept_ratio
-    loss = concept_loss * ratio + summary_loss * (1 - ratio) + conpred_loss
+    r1 = hp.loss_concept_ratio
+    r2 = hp.loss_conpred_ratio
+    loss = concept_loss * r1 + conpred_loss * r2 + summary_loss * (1 - r1 - r2)
     return loss, [concept_loss, summary_loss, conpred_loss]
 
 def average_gradients(tower_grads):
@@ -748,6 +749,7 @@ def main(self):
         logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
         logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
         logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
+        logging.info('Loss Conpred Ratio: ' + str(hp.loss_conpred_ratio))
         logging.info('Pred Concept Ratio: ' + str(hp.pred_concept_ratio))
         logging.info('*' * 50)
 
