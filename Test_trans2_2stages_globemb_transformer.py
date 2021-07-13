@@ -26,11 +26,11 @@ def positional_encoding(inputs, positions, scope='positional_encoding'):
 def segment_embedding(inputs, hp, scope='segment_embedding'):
     # 每个序列中的clip各自对应一个嵌入，所有concept共享一个嵌入
     # 将inputs按照clip与concept切分，clip加上positional embedding，concept加上一个共享的embedding
-    clip_len = hp.seq_len
+    clip_len = hp.seq_len + 1  # 多一个global节点
     concept_len = inputs.get_shape().as_list()[1] - clip_len
     with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         clip_embs = []
-        for i in range(hp.seq_len):
+        for i in range(clip_len):
             var = tf.get_variable(name='clip_posemb_%d' % i, shape=[D_MODEL])
             var = tf.reshape(var, shape=(1, D_MODEL))
             clip_embs.append(var)
@@ -174,42 +174,24 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
                 block_outputs.append(enc)
         memory = enc
 
-        # block_outputs = tf.concat(block_outputs, axis=0)
-        # [bc,seq,d] = memory.get_shape().as_list()
-        # block_outputs = tf.reshape(block_outputs, shape=[hp.num_blocks, bc, seq, d])
-        # block_outputs = tf.transpose(block_outputs, perm=[1,2,0,3])  # bc*seq*blocknum*d
-        # block_outputs = tf.reshape(block_outputs, shape=[bc*seq, hp.num_blocks, d])  # (bc*seq)*blocknum*d
-        # block_mask = tf.math.equal(tf.convert_to_tensor(np.ones([bc*seq, hp.num_blocks])), 0)
-        # block_agg = multihead_attention(queries=block_outputs,
-        #                                 keys=block_outputs,
-        #                                 values=block_outputs,
-        #                                 key_masks=block_mask,
-        #                                 num_heads=4,
-        #                                 dropout_rate=0,
-        #                                 training=training,
-        #                                 causality=False)
-        # block_agg = ff(block_agg, num_units=[D_FF, D_MODEL], dropout_rate=0)
-        # block_agg = tf.reduce_mean(block_agg, axis=1)  # (bc*seq)*d
-        # block_agg = tf.reshape(block_agg, shape=[bc, seq, d])
-        # memory = block_agg
-
         return memory
 
-def transformer(features, positions, scores_src, txt_emb, img_emb, drop_out, training, hp, c_num, s_num):
+def transformer(features, positions, scores_src, img_emb, global_emb, drop_out, training, hp, c_num, s_num):
     with tf.variable_scope("transformer", reuse=tf.AUTO_REUSE):
         # encoder & decoder inputs
         image_nodes = tf.layers.dense(img_emb, D_MODEL, use_bias=True, activation=None)
         visual_nodes = tf.layers.dense(features, D_MODEL, use_bias=True, activation=None)
+        global_nodes = tf.layers.dense(global_emb, D_MODEL, use_bias=True, activation=None)  # bc*1*D
 
         visual_nodes += positional_encoding(visual_nodes, positions)
-        input_nodes = tf.concat([visual_nodes, image_nodes], axis=1)
+        input_nodes = tf.concat([global_nodes, visual_nodes, image_nodes], axis=1)
         input_nodes = segment_embedding(input_nodes, hp)
 
         src_masks = tf.math.equal(scores_src, 0)  # 标记输入的节点序列内哪些是padding部分
 
         # encoding & decoding
         memory = encoder(input_nodes, src_masks, drop_out, training, hp)
-        decoder_output = memory[:, :hp.seq_len, :]
+        decoder_output = memory[: , 1 : hp.seq_len + 1, :]
 
         concept_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
         concept_branch = tf.layers.dense(concept_branch, 512, use_bias=True, activation=tf.nn.relu)
