@@ -502,8 +502,9 @@ def evaluation_2stages(concept_lists, summary_lists, query_summary, Tags, test_v
 
             # make summary
             shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
-            shots_pred = shots_pred[-hl_num_s2 : , 1].astype(int)
-            shots_pred.sort()
+            # shots_pred = shots_pred[-hl_num_s2 : , 1].astype(int)
+            shots_pred = shots_pred[-len(shots_gt):, 1].astype(int)
+            shots_pred.sort() 
 
             # compute
             sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
