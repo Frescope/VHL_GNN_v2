@@ -502,8 +502,8 @@ def evaluation_2stages(concept_lists, summary_lists, query_summary, Tags, test_v
 
             # make summary
             shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
-            # shots_pred = shots_pred[-hl_num_s2 : , 1].astype(int)
-            shots_pred = shots_pred[-len(shots_gt):, 1].astype(int)
+            shots_pred = shots_pred[-hl_num_s2 : , 1].astype(int)
+            # shots_pred = shots_pred[-len(shots_gt):, 1].astype(int)
             shots_pred.sort()
 
             # compute
@@ -542,7 +542,7 @@ def model_search(model_save_dir, observe):
                 model_to_restore.append(os.path.join(root, model_name))
     model_to_restore = list(set(model_to_restore))
     # model_to_restore.sort(key=takestep)
-    #
+    # 
     # if observe == 0:
     #     # 只取最高F1的模型
     #     model_kfold = []
