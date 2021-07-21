@@ -191,17 +191,22 @@ def transformer(features, positions, scores_src, img_emb, global_emb, drop_out, 
         # encoding & decoding
         memory = encoder(input_nodes, src_masks, drop_out, training, hp)
         global_node, clip_nodes, concept_nodes = tf.split(memory, [1, hp.seq_len, c_num], 1)
+
         concept_nodes = tf.transpose(concept_nodes, perm=(0,2,1))  # bc*D*c
-        decoder_output = tf.matmul(clip_nodes,concept_nodes)
+        Products = tf.matmul(clip_nodes,concept_nodes)  # 余弦相似度的分子，bc*seqlen*c
+        Mag_clip = tf.sqrt(tf.reduce_sum(tf.square(clip_nodes), axis=2, keep_dims=True))  # 求模，bc*seqlen*1
+        Mag_concep = tf.sqrt(tf.reduce_sum(tf.square(concept_nodes), axis=1, keep_dims=True))  # 求模，bc*1*c
+        Mag_product = tf.matmul(Mag_clip, Mag_concep)  # bc*seqlen*c
+        Cos_similarity = Products / (Mag_product + 1e-8)  # bc*seqlen*c
 
-        concept_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
-        concept_branch = tf.layers.dense(concept_branch, 512, use_bias=True, activation=tf.nn.relu)
-        concept_logits = tf.layers.dense(concept_branch, c_num, use_bias=True, activation=None)
-        concept_logits = tf.nn.softmax(concept_logits, axis=1)  # 归一化
+        # concept_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
+        # concept_branch = tf.layers.dense(concept_branch, 512, use_bias=True, activation=tf.nn.relu)
+        # concept_logits = tf.layers.dense(concept_branch, c_num, use_bias=True, activation=None)
+        concept_logits = tf.sigmoid(Cos_similarity)  # 归一化
 
-        summary_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
+        summary_branch = tf.layers.dense(clip_nodes, 1024, use_bias=True, activation=tf.nn.relu)
         summary_branch = tf.layers.dense(summary_branch, 512, use_bias=True, activation=tf.nn.relu)
         summary_logits = tf.layers.dense(summary_branch, s_num, use_bias=True, activation=None)
-        summary_logits = tf.nn.softmax(summary_logits, axis=1)
+        summary_logits = tf.sigmoid(summary_logits)
 
         return concept_logits, summary_logits

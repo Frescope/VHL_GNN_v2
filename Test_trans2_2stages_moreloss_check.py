@@ -421,7 +421,7 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, r
 
     # for reconstruction
     reconst_loss = tf.losses.mean_squared_error(reconst_vecs, features)
-    reconst_loss /= 1000
+    reconst_loss /= D_FEATURE
 
     # for diversity
     diverse_labels = tf.reduce_sum(concept_labels, axis=2)  # 取所有concept正例的并集
