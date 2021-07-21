@@ -1,3 +1,4 @@
+# 添加重建损失与多样性损失
 # 两阶段预测策略
 
 import os
@@ -12,7 +13,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_trans2_2stages_retrieval_transformer import transformer
+from Test_trans2_2stages_ce_transformer import transformer
 import networkx as nx
 
 class Path:
@@ -26,17 +27,21 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=1e-4, type=float)
+    parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
 
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
+
     parser.add_argument('--loss_concept_ratio', default=0.75, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_reconst_ratio', default=0.00, type=float)  # loss中来自reconst_loss的比例
+    parser.add_argument('--loss_diverse_ratio', default=0.00, type=float)  # loss中来自diverse_loss的比例
+
     parser.add_argument('--pred_concept_ratio', default=0.25, type=float)  # prediction中来自concept_logits的比例
 
     parser.add_argument('--global_ratio', default=0.1, type=float)  # 全局嵌入的抽样比例
-    parser.add_argument('--global_mode', default='mean', type=str)  # 全局嵌入的类型
+    parser.add_argument('--global_mode', default='min', type=str)  # 全局嵌入的类型
 
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
@@ -67,7 +72,7 @@ CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold2
 
-LOAD_CKPT_MODEL = True
+LOAD_CKPT_MODEL = False
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -378,7 +383,7 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, hp):
+def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, reconst_vecs, features, hp):
     # concept_logits & concept_labels: bc*seq_len*48
     # seq_logits & seq_labels: bc*seq_len
     # 对concept_loss，计算各个shot在所有concept上的NCE-Loss的均值
@@ -386,24 +391,42 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, h
     # 合并上述两种loss
 
     # for concept
-    concept_logits = tf.transpose(concept_logits, perm=(0,2,1))  # bc*48*seq_len
-    concept_logits = tf.reshape(concept_logits, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
-    concept_labels = tf.transpose(concept_labels, perm=(0,2,1))
-    concept_labels = tf.reshape(concept_labels, shape=(-1, hp.seq_len))
-    labels_binary = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-    nce_pos = tf.reduce_sum(tf.exp(labels_binary * concept_logits), axis=1)  # 分子
-    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(concept_logits), axis=1)   # 分母
-    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
-    concept_loss = tf.reduce_mean(nce_loss)
+    concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
+    concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
+    concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
+    concept_loss = tf.reduce_mean(concept_loss)
 
     # for summary
-    labels_binary = tf.cast(tf.cast(seq_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-    nce_pos = tf.reduce_sum(tf.exp(labels_binary * seq_logits), axis=1)  # 分子
-    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(seq_logits), axis=1)  # 分母
-    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
-    summary_loss = tf.reduce_mean(nce_loss)
+    seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
+    summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
+    summary_loss = tf.reduce_mean(summary_loss)
+
+    # # for reconstruction
+    # reconst_loss = tf.losses.mean_squared_error(reconst_vecs, features)
+    # reconst_loss /= 1000
+    #
+    # # for diversity
+    # diverse_labels = tf.reduce_sum(concept_labels, axis=2)  # 取所有concept正例的并集
+    # labels_binary = tf.cast(tf.cast(diverse_labels, dtype=tf.bool), dtype=tf.float32)
+    # labels_binary = tf.expand_dims(labels_binary, -1)  # bc*seq_len*1
+    #
+    # KeyVecs = reconst_vecs * labels_binary  # 遮蔽非关键片段，bc*seqlen*D
+    # KeyVecs_T = tf.transpose(KeyVecs, perm=(0, 2, 1))  # bc*D*seqlen
+    # Products = tf.matmul(KeyVecs, KeyVecs_T)  # 点积，bc*seqlen*seqlen
+    #
+    # Magnitude = tf.sqrt(tf.reduce_sum(tf.square(KeyVecs), axis=2, keep_dims=True))  # 求模，bc*seqlen*1
+    # Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*seqlen
+    # Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*seqlen*seqlen
+    #
+    # diverse_loss = tf.reduce_mean(Products / (Mag_product + 1e-8))
+
+    # # total loss
+    # r_c = hp.loss_concept_ratio
+    # r_r = hp.loss_reconst_ratio
+    # r_d = hp.loss_diverse_ratio
+    # r_s = 1 - r_c - r_r - r_d
+    # loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
+    # return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
 
     ratio = hp.loss_concept_ratio
     loss = concept_loss * ratio + summary_loss * (1 - ratio)
@@ -503,7 +526,6 @@ def evaluation_2stages(concept_lists, summary_lists, query_summary, Tags, test_v
             # make summary
             shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
             shots_pred = shots_pred[-hl_num_s2 : , 1].astype(int)
-            # shots_pred = shots_pred[-len(shots_gt):, 1].astype(int)
             shots_pred.sort()
 
             # compute
@@ -530,37 +552,18 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-def model_search(model_save_dir, observe):
-    def takestep(name):
-        return int(name.split('-')[0].split('S')[-1])
-    # 找到要验证的模型名称
-    model_to_restore = []
-    for root,dirs,files in os.walk(model_save_dir):
-        for file in files:
-            if file.endswith('.meta'):
-                model_name = file.split('.meta')[0]
-                model_to_restore.append(os.path.join(root, model_name))
-    model_to_restore = list(set(model_to_restore))
-    # model_to_restore.sort(key=takestep)
-    #
-    # if observe == 0:
-    #     # 只取最高F1的模型
-    #     model_kfold = []
-    #     f1s = []
-    #     for name in model_to_restore:
-    #         f1 = name.split('-')[-1]
-    #         if f1.startswith('F'):
-    #             f1s.append(float(f1.split('F')[-1]))
-    #     if len(f1s) == 0:
-    #         return []  # 没有合格的模型
-    #     f1_max = np.array(f1s).max()
-    #     for name in model_to_restore:
-    #         f1 = name.split('-')[-1]
-    #         if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
-    #             model_kfold.append(name)
-    #     model_to_restore = model_kfold
-
-    return model_to_restore
+def model_clear(model_save_dir, max_f1):
+    # 清除之前所有F1较小的模型
+    models = []
+    for name in os.listdir(model_save_dir):
+        if name.endswith('.meta'):
+            models.append(name.split('.meta')[0])
+    for model in models:
+        f1 = model.split('-')[-1]
+        if f1.startswith('F') and float(f1.split('F')[-1]) < max_f1:
+            file_path = os.path.join(model_save_dir, model) + '*'
+            os.system('rm -rf %s' % file_path)
+    return
 
 def make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp):
     # 按照concepts与queries中的顺序，根据concept与summary的logits决定最终的预测
@@ -584,7 +587,11 @@ def make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp)
     seq_labels = tf.concat(seq_labels, axis=0)
     return seq_logits, seq_labels
 
-def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path):
+def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
+    if not os.path.exists(model_save_dir):
+        os.makedirs(model_save_dir)
+    max_f1 = MAX_F1
+
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -613,7 +620,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         for gpu_index in range(hp.gpu_num):
             with tf.device('/gpu:%d' % gpu_index):
                 features = features_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
-                global_embs = global_embs_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
+                global_embs = global_embs_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 positions = positions_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 scores_src = scores_src_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 concept_labels = concept_labels_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
@@ -623,22 +630,27 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # 整合concept与summary的预测，形成最终预测
-                concept_logits, summary_logits = transformer(features, positions, scores_src, img_emb, global_embs,
-                                                             dropout_holder, training_holder, hp, D_C_OUTPUT, D_S_OUTPUT)
+                concept_logits, summary_logits, reconst_vecs = transformer(features, positions, scores_src, img_emb, global_embs,
+                                     dropout_holder, training_holder, hp, D_C_OUTPUT, D_S_OUTPUT)
                 concept_logits_list.append(concept_logits)
                 summary_logits_list.append(summary_logits)
 
                 seq_logits, seq_labels = make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp)  # 训练时每个序列只针对一个query预测summary
                 loss, loss_ob = tower_loss_2stages(concept_logits, concept_labels,
-                                                   seq_logits, seq_labels, hp)
+                                                   seq_logits, seq_labels,
+                                                   reconst_vecs, features,
+                                                   hp)
                 varlist = tf.trainable_variables()  # 全部训练
-                # grads_train = opt_train.compute_gradients(loss, varlist)
-                # thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
-                # grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
-                # tower_grads_train.append(grads_train_cap)
+                grads_train = opt_train.compute_gradients(loss, varlist)
+                thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
+                grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
+                tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
-        train_op = tf.no_op()
+        grads_t = average_gradients(tower_grads_train)
+        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
+        if test_mode == 1:
+            train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -650,8 +662,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + model_path)
-            saver_overall.restore(sess, model_path)
+            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
+            saver_overall.restore(sess, CKPT_MODEL_PATH)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -673,6 +685,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
 
         # begin training
         ob_loss = []
+        ob_sub_loss = []
         timepoint = time.time()
         for step in range(hp.maxstep):
             features_b, global_embs_b, positions_b, scores_b, concept_labels_b, summary_labels_b, query_indexes_b = \
@@ -692,20 +705,31 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                                           training_holder: True})
 
             loss_batch = np.array(observe[1:1 + hp.gpu_num])
+            sub_loss_batch = observe[-4:]
             ob_loss.append(loss_batch)  # 卡0和卡1返回的是来自同一个batch的两部分loss，求平均
+            ob_sub_loss.append(sub_loss_batch)
 
             # save checkpoint &  evaluate
             epoch = step / epoch_step
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
+                if step == 0 and test_mode == 0:
+                    continue
                 train_scheme = train_scheme_build_2stages(data_train, concepts, query_summary, hp)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)
                 ob_loss.clear()
+                sub_loss_array = np.array(ob_sub_loss)
+                sub_loss_array = np.mean(sub_loss_array, axis=0)
+                ob_sub_loss.clear()
                 logging.info(' Step %d: %.3f sec' % (step, duration))
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
+                # logging.info('C_Loss: %.4f R_Loss: %.4f D_Loss: %.4f S_Loss: %.4f' %
+                #              (sub_loss_array[0],sub_loss_array[1],sub_loss_array[2],sub_loss_array[3]))
+                if not int(epoch) % hp.eval_epoch == 0:
+                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 concept_lists = []
                 summary_lists = []
@@ -730,8 +754,27 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
                 p, r, f = evaluation_2stages(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                return f
-    return 0
+
+                if test_mode == 1:
+                    return
+                # save model
+                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
+                    max_f1 = f
+                    model_clear(model_save_dir, max_f1)
+                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
+                    saver_overall.save(sess, model_path)
+                    logging.info('Model Saved: ' + model_path + '\n')
+
+            if step % 3000 == 0 and step > 0:
+                model_path = model_save_dir + 'S%d-E%d' % (step + PRESTEPS, epoch)
+                # saver_overall.save(sess, model_path)
+                logging.info('Model Saved: ' + str(step + PRESTEPS))
+
+            # saving final model
+        model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
+        # saver_overall.save(sess, model_path)
+        logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
+
 
 def main(self):
     Tags = load_Tags(TAGS_PATH)
@@ -740,8 +783,11 @@ def main(self):
     concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
     # evaluate all videos in turn
-    model_scores = {}
+    kfold_start = int(int(hp.start) / 10)
+    repeat_start = int(hp.start) % 10
     for kfold in range(4):
+        if kfold < kfold_start:
+            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -769,28 +815,27 @@ def main(self):
         logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
         logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
         logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
+        logging.info('Loss Reconstruct Ratio: ' + str(hp.loss_reconst_ratio))
+        logging.info('Loss Diverse Ratio: ' + str(hp.loss_diverse_ratio))
         logging.info('Pred Concept Ratio: ' + str(hp.pred_concept_ratio))
         logging.info('*' * 50)
 
         # repeat
-        scores = []
         for i in range(hp.repeat):
+            if kfold == kfold_start and i < repeat_start:
+                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            models_to_restore = model_search(model_save_dir, observe=hp.observe)
-            for i in range(len(models_to_restore)):
-                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
-                model_path = models_to_restore[i]
-                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 model_path)
-                scores.append(f1)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores
-    scores_all = 0
-    for vid in model_scores:
-        scores = model_scores[vid]
-        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
-                     (vid, np.array(scores).mean(), str(scores)))
-        scores_all += np.array(scores).mean()
-    logging.info('Overall Results: %.3f' % (scores_all / 4))
+            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
+            logging.info('*' * 60)
+            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
+                         model_save_dir, 0)
+            logging.info('*' * 60)
+            if len(hp.end) > 0:
+                kfold_end = int(int(hp.end) / 10)
+                repeat_end = int(hp.end) % 10
+                if kfold >= kfold_end and i >= repeat_end:
+                    return
+        logging.info('^' * 60 + '\n')
 
 if __name__ == '__main__':
     tf.app.run()

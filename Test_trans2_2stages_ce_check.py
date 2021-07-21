@@ -12,27 +12,32 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_trans2_2stages_retrieval_transformer import transformer
+from Test_trans2_2stages_ce_transformer import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
-    parser.add_argument('--num_heads',default=8,type=int)
-    parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=25,type=int)
-    parser.add_argument('--bc',default=20,type=int)
-    parser.add_argument('--dropout',default='0.1',type=float)
-    parser.add_argument('--gpu_num',default=1,type=int)
+    parser.add_argument('--gpu', default='0', type=str)
+    parser.add_argument('--num_heads', default=8, type=int)
+    parser.add_argument('--num_blocks', default=6, type=int)
+    parser.add_argument('--seq_len', default=25, type=int)
+    parser.add_argument('--bc', default=20, type=int)
+    parser.add_argument('--dropout', default='0.1', type=float)
+    parser.add_argument('--gpu_num', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=1e-4, type=float)
+    parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
 
+
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
+
     parser.add_argument('--loss_concept_ratio', default=0.75, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_reconst_ratio', default=0.00, type=float)  # loss中来自reconst_loss的比例
+    parser.add_argument('--loss_diverse_ratio', default=0.00, type=float)  # loss中来自diverse_loss的比例
+
     parser.add_argument('--pred_concept_ratio', default=0.25, type=float)  # prediction中来自concept_logits的比例
 
     parser.add_argument('--global_ratio', default=0.1, type=float)  # 全局嵌入的抽样比例
@@ -378,7 +383,7 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, hp):
+def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, reconst_vecs, features, hp):
     # concept_logits & concept_labels: bc*seq_len*48
     # seq_logits & seq_labels: bc*seq_len
     # 对concept_loss，计算各个shot在所有concept上的NCE-Loss的均值
@@ -386,24 +391,42 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, h
     # 合并上述两种loss
 
     # for concept
-    concept_logits = tf.transpose(concept_logits, perm=(0,2,1))  # bc*48*seq_len
-    concept_logits = tf.reshape(concept_logits, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
-    concept_labels = tf.transpose(concept_labels, perm=(0,2,1))
-    concept_labels = tf.reshape(concept_labels, shape=(-1, hp.seq_len))
-    labels_binary = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-    nce_pos = tf.reduce_sum(tf.exp(labels_binary * concept_logits), axis=1)  # 分子
-    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(concept_logits), axis=1)   # 分母
-    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
-    concept_loss = tf.reduce_mean(nce_loss)
+    concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
+    concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
+    concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
+    concept_loss = tf.reduce_mean(concept_loss)
 
     # for summary
-    labels_binary = tf.cast(tf.cast(seq_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-    nce_pos = tf.reduce_sum(tf.exp(labels_binary * seq_logits), axis=1)  # 分子
-    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(seq_logits), axis=1)  # 分母
-    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
-    summary_loss = tf.reduce_mean(nce_loss)
+    seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
+    summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
+    summary_loss = tf.reduce_mean(summary_loss)
+
+    # # for reconstruction
+    # reconst_loss = tf.losses.mean_squared_error(reconst_vecs, features)
+    # reconst_loss /= 1000
+    #
+    # # for diversity
+    # diverse_labels = tf.reduce_sum(concept_labels, axis=2)  # 取所有concept正例的并集
+    # labels_binary = tf.cast(tf.cast(diverse_labels, dtype=tf.bool), dtype=tf.float32)
+    # labels_binary = tf.expand_dims(labels_binary, -1)  # bc*seq_len*1
+    #
+    # KeyVecs = reconst_vecs * labels_binary  # 遮蔽非关键片段，bc*seqlen*D
+    # KeyVecs_T = tf.transpose(KeyVecs, perm=(0, 2, 1))  # bc*D*seqlen
+    # Products = tf.matmul(KeyVecs, KeyVecs_T)  # 点积，bc*seqlen*seqlen
+    #
+    # Magnitude = tf.sqrt(tf.reduce_sum(tf.square(KeyVecs), axis=2, keep_dims=True))  # 求模，bc*seqlen*1
+    # Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*seqlen
+    # Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*seqlen*seqlen
+    #
+    # diverse_loss = tf.reduce_mean(Products / (Mag_product + 1e-8))
+
+    # # total loss
+    # r_c = hp.loss_concept_ratio
+    # r_r = hp.loss_reconst_ratio
+    # r_d = hp.loss_diverse_ratio
+    # r_s = 1 - r_c - r_r - r_d
+    # loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
+    # return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
 
     ratio = hp.loss_concept_ratio
     loss = concept_loss * ratio + summary_loss * (1 - ratio)
@@ -623,14 +646,16 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # 整合concept与summary的预测，形成最终预测
-                concept_logits, summary_logits = transformer(features, positions, scores_src, img_emb, global_embs,
+                concept_logits, summary_logits, reconst_vecs = transformer(features, positions, scores_src, img_emb, global_embs,
                                                              dropout_holder, training_holder, hp, D_C_OUTPUT, D_S_OUTPUT)
                 concept_logits_list.append(concept_logits)
                 summary_logits_list.append(summary_logits)
 
                 seq_logits, seq_labels = make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp)  # 训练时每个序列只针对一个query预测summary
                 loss, loss_ob = tower_loss_2stages(concept_logits, concept_labels,
-                                                   seq_logits, seq_labels, hp)
+                                                   seq_logits, seq_labels,
+                                                   reconst_vecs, features,
+                                                   hp)
                 varlist = tf.trainable_variables()  # 全部训练
                 # grads_train = opt_train.compute_gradients(loss, varlist)
                 # thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -769,6 +794,8 @@ def main(self):
         logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
         logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
         logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
+        logging.info('Loss Reconstruct Ratio: ' + str(hp.loss_reconst_ratio))
+        logging.info('Loss Diverse Ratio: ' + str(hp.loss_diverse_ratio))
         logging.info('Pred Concept Ratio: ' + str(hp.pred_concept_ratio))
         logging.info('*' * 50)
 
