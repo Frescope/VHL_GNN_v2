@@ -1,4 +1,4 @@
-# 加入retrieval，加入全局嵌入
+# 将concept特征改为视频特征，训练时按照一定比例采样若干个求均值，测试时也采用同样的方法
 # 在输入序列的左端点加入全局表征
 # 两阶段预测策略
 
@@ -14,7 +14,7 @@ import argparse
 import scipy.io
 import h5py
 import pickle
-from Test_trans2_2stages_retrieval_transformer import transformer
+from Test_trans2_2stages_videoemb_transformer import transformer
 import networkx as nx
 
 class Path:
@@ -28,7 +28,7 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=1e-4, type=float)
+    parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
 
@@ -40,12 +40,14 @@ class Path:
     parser.add_argument('--global_ratio', default=0.2, type=float)  # 全局嵌入的抽样比例
     parser.add_argument('--global_mode', default='min', type=str)  # 全局嵌入的类型
 
+    parser.add_argument('--concept_vid_num', default=10, type=int)  # concept抽样的视频嵌入数量
+    parser.add_argument('--concept_vid_mode', default='min', type=str)  # concept的视频嵌入的类型
+
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch',default=5,type=int)
+    parser.add_argument('--eval_epoch',default=50,type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
-
 
 hparams = Path()
 parser = hparams.parser
@@ -70,7 +72,7 @@ CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold2
 
-LOAD_CKPT_MODEL = False
+LOAD_CKPT_MODEL = True
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -84,6 +86,7 @@ if hp.server == 0:
     CONCEPT_DICT_PATH = r'/public/data1/users/hulinkang/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_embeddding/'
+    CONCEPT_VID_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_video_embeddding/'
     MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_HL_utc_query/'
     CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
 else:
@@ -96,6 +99,7 @@ else:
     CONCEPT_DICT_PATH = r'/data/linkang/VHL_GNN/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
+    CONCEPT_VID_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_video_embeddding/'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
     CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/utc_SA/'
 
@@ -170,37 +174,24 @@ def load_feature_4fold(feature_base, concept_label_path, summary_label_path, Tag
                      ' Concept Label: '+str(concept_label.shape)+' Summary Label: '+str(summary_label.shape))
     return data
 
-def load_concept(dict_path, txt_emb_path, img_emb_dir):
-    # 加载concept的字典、文本嵌入以及图像嵌入
+def load_concept(dict_path, video_emb_dir):
+    # 加载concept的字典，以及视频嵌入
     # load dict
     concepts = []
     with open(dict_path, 'r') as f:
         for word in f.readlines():
             concepts.append(word.strip().split("'")[1])
     concepts.sort()
-    # load text embedding
-    with open(txt_emb_path,'rb') as f:
-        txt_embedding = pickle.load(f)
-    # load img embedding
-    img_embedding = {}
-    for root, dirs, files in os.walk(img_emb_dir):
-        for file in files:
-            concept = file.split('_')[0]
-            embedding = np.load(os.path.join(root, file))
-            img_embedding[concept] = np.mean(embedding, axis=0)
-    # embedding integration
-    concept_embedding = {}
-    concept_transfer = {"Cupglass": "Glass",
-                        "Musicalinstrument": "Instrument",
-                        "Petsanimal": "Animal"}
-    for key in img_embedding:
-        concept_embedding[key] = {}
-        txt_key = img_key = key
-        if txt_key in concept_transfer:
-            txt_key = concept_transfer[txt_key]
-        concept_embedding[key]['txt'] = txt_embedding[txt_key]
-        concept_embedding[key]['img'] = img_embedding[img_key]
-    return concepts, concept_embedding
+
+    concept_vid_embeddings = {}
+    for vid in range(1, 5):
+        concept_vid_embeddings[str(vid)] = {}
+        emb_base = video_emb_dir + 'V0%d/' % vid
+        for concept in concepts:
+            embedding = np.load(emb_base + concept + '_V%d_I3D.npy' % vid)
+            concept_vid_embeddings[str(vid)][concept] = embedding
+
+    return concepts, concept_vid_embeddings
 
 def get_global_embeddings(data, ratio, mode):
     # 根据一定的比例从原视频的特征中随机采样一些，按照给定的模式拼接
@@ -213,6 +204,24 @@ def get_global_embeddings(data, ratio, mode):
         while len(samples) < sample_num:
             samples.add(np.random.randint(0, vlength))
         embs_matrix = data['feature'][list(samples)]  # n*D
+    if mode == 'mean':
+        embs = np.mean(embs_matrix, axis=0)
+    elif mode == 'max':
+        embs = np.max(embs_matrix, axis=0)
+    elif mode == 'min':
+        embs = np.min(embs_matrix, axis=0)
+    else:
+        embs = np.mean(embs_matrix, axis=0)
+    embs = embs.reshape((1, D_FEATURE))
+    return embs
+
+def get_concept_embeddings(embeddings, num, mode):
+    # 对每个concept，从对应的视频嵌入序列中随机抽样num个，按照mode的方法组合
+    num = min(len(embeddings), num)  # 不超过嵌入列表总长度
+    samples = random.sample(list(range(len(embeddings))), num)
+    embs_matrix = embeddings[samples]
+    if len(embs_matrix) == 0:
+        return np.zeros((1, D_FEATURE))
     if mode == 'mean':
         embs = np.mean(embs_matrix, axis=0)
     elif mode == 'max':
@@ -291,7 +300,7 @@ def train_scheme_build_2stages(data_train, concepts, query_summary, hp):
     random.shuffle(train_scheme)
     return train_scheme
 
-def get_batch_train_2stages(data_train, train_scheme, queries, concepts, step, hp):
+def get_batch_train_2stages(data_train, train_scheme, queries, concepts, concept_vid_embeddings, step, hp):
     # 从train_scheme中获取gpu_num*bc个序列，每个长度seq_len，并返回每个clip的全局位置
     batch_num = hp.gpu_num * hp.bc
     features = []
@@ -320,7 +329,17 @@ def get_batch_train_2stages(data_train, train_scheme, queries, concepts, step, h
     positions = np.array(positions)
     qc_indexes = np.array(qc_indexes)
     scores = np.ones((batch_num, hp.seq_len + 1))  # 多一个全局嵌入
-    return features, global_embs, positions, scores, concept_labels, summary_labels, qc_indexes
+
+    concept_embs = []
+    vids = list(data_train.keys())
+    vid = random.sample(vids, 1)[0]  # 随机从训练集里选一个视频，取其对应的concept嵌入
+    for c in concepts:
+        emb = get_concept_embeddings(concept_vid_embeddings[vid][c], hp.concept_vid_num, hp.concept_vid_mode)
+        concept_embs.append(emb)
+    concept_embs = np.array(concept_embs).reshape((CONCEPT_NUM, D_FEATURE))
+    concept_embs = np.tile(concept_embs, [hp.gpu_num * hp.bc, 1, 1])
+
+    return global_embs, features, concept_embs, positions, scores, concept_labels, summary_labels, qc_indexes
 
 def test_scheme_build(data_test, seq_len):
     # 依次输入测试集中所有clip，不足seqlen的要补足，在getbatch中补足不够一个batch的部分
@@ -335,7 +354,7 @@ def test_scheme_build(data_test, seq_len):
         test_vids.append((vid, vlength))
     return test_scheme, test_vids
 
-def get_batch_test(data_test, test_scheme, step, hp):
+def get_batch_test(data_test, test_scheme, concepts, concept_vid_embeddings, step, hp):
     # 标记每个序列中的有效长度，并对不足一个batch的部分做padding
     # 不需要对序列水平上的padding做标记
     features = []
@@ -367,7 +386,17 @@ def get_batch_test(data_test, test_scheme, step, hp):
     global_embs = np.array(global_embs)
     positions = np.array(positions)
     scores = np.array(scores)
-    return features, global_embs, positions, scores
+
+    concept_embs = []
+    vids = list(data_test.keys())
+    vid = random.sample(vids, 1)[0]
+    for c in concepts:
+        emb = get_concept_embeddings(concept_vid_embeddings[vid][c], hp.concept_vid_num, hp.concept_vid_mode)
+        concept_embs.append(emb)
+    concept_embs = np.array(concept_embs).reshape((CONCEPT_NUM, D_FEATURE))
+    concept_embs = np.tile(concept_embs, [hp.gpu_num * hp.bc, 1, 1])
+
+    return global_embs, features, concept_embs, positions, scores
 
 def _variable_on_cpu(name, shape, initializer):
     with tf.device('/cpu:0'):
@@ -532,18 +561,37 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-def model_clear(model_save_dir, max_f1):
-    # 清除之前所有F1较小的模型
-    models = []
-    for name in os.listdir(model_save_dir):
-        if name.endswith('.meta'):
-            models.append(name.split('.meta')[0])
-    for model in models:
-        f1 = model.split('-')[-1]
-        if f1.startswith('F') and float(f1.split('F')[-1]) < max_f1:
-            file_path = os.path.join(model_save_dir, model) + '*'
-            os.system('rm -rf %s' % file_path)
-    return
+def model_search(model_save_dir, observe):
+    def takestep(name):
+        return int(name.split('-')[0].split('S')[-1])
+    # 找到要验证的模型名称
+    model_to_restore = []
+    for root,dirs,files in os.walk(model_save_dir):
+        for file in files:
+            if file.endswith('.meta'):
+                model_name = file.split('.meta')[0]
+                model_to_restore.append(os.path.join(root, model_name))
+    model_to_restore = list(set(model_to_restore))
+    # model_to_restore.sort(key=takestep)
+    #
+    # if observe == 0:
+    #     # 只取最高F1的模型
+    #     model_kfold = []
+    #     f1s = []
+    #     for name in model_to_restore:
+    #         f1 = name.split('-')[-1]
+    #         if f1.startswith('F'):
+    #             f1s.append(float(f1.split('F')[-1]))
+    #     if len(f1s) == 0:
+    #         return []  # 没有合格的模型
+    #     f1_max = np.array(f1s).max()
+    #     for name in model_to_restore:
+    #         f1 = name.split('-')[-1]
+    #         if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
+    #             model_kfold.append(name)
+    #     model_to_restore = model_kfold
+
+    return model_to_restore
 
 def make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp):
     # 按照concepts与queries中的顺序，根据concept与summary的logits决定最终的预测
@@ -567,23 +615,18 @@ def make_summary(concept_logits, summary_logits, summary_labels, qc_indexes, hp)
     seq_labels = tf.concat(seq_labels, axis=0)
     return seq_logits, seq_labels
 
-def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_save_dir, test_mode):
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    max_f1 = MAX_F1
-
+def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_vid_embeddings, model_path):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
-        features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_FEATURE))
         global_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, 1, D_FEATURE))
+        features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_FEATURE))
+        concept_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_FEATURE))
         positions_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + CONCEPT_NUM + 1))
         concept_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_C_OUTPUT))
         summary_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_S_OUTPUT))
         qc_indexes_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, 3))  # 训练时给每个序列标记一个取样时的query与concept的索引
-        txt_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_TXT_EMB))
-        img_emb_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, CONCEPT_NUM, D_IMG_EMB))
         dropout_holder = tf.placeholder(tf.float32, shape=())
         training_holder = tf.placeholder(tf.bool, shape=())
 
@@ -599,18 +642,17 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         loss_ob_list = []
         for gpu_index in range(hp.gpu_num):
             with tf.device('/gpu:%d' % gpu_index):
-                features = features_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 global_embs = global_embs_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
+                features = features_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
+                concept_embs = concept_embs_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 positions = positions_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 scores_src = scores_src_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 concept_labels = concept_labels_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
                 summary_labels = summary_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 qc_indexes = qc_indexes_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
-                txt_emb = txt_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
-                img_emb = img_emb_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
 
                 # 整合concept与summary的预测，形成最终预测
-                concept_logits, summary_logits = transformer(features, positions, scores_src, img_emb, global_embs,
+                concept_logits, summary_logits = transformer(global_embs, features, concept_embs, positions, scores_src,
                                      dropout_holder, training_holder, hp, D_C_OUTPUT, D_S_OUTPUT)
                 concept_logits_list.append(concept_logits)
                 summary_logits_list.append(summary_logits)
@@ -619,16 +661,13 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 loss, loss_ob = tower_loss_2stages(concept_logits, concept_labels,
                                                    seq_logits, seq_labels, hp)
                 varlist = tf.trainable_variables()  # 全部训练
-                grads_train = opt_train.compute_gradients(loss, varlist)
-                thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
-                grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
-                tower_grads_train.append(grads_train_cap)
+                # grads_train = opt_train.compute_gradients(loss, varlist)
+                # thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
+                # grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
+                # tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
-        grads_t = average_gradients(tower_grads_train)
-        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
-        if test_mode == 1:
-            train_op = tf.no_op()
+        train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -640,8 +679,8 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
-            saver_overall.restore(sess, CKPT_MODEL_PATH)
+            logging.info(' Ckpt Model Restoring: ' + model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -650,34 +689,22 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         epoch_step = math.ceil(len(train_scheme) / (hp.gpu_num * hp.bc))
         max_test_step = math.ceil(len(test_scheme) / (hp.gpu_num * hp.bc))
 
-        # concept embedding processing
-        txt_emb_b = []
-        img_emb_b = []
-        for c in concepts:
-            txt_emb_b.append(concept_embeeding[c]['txt'])
-            img_emb_b.append(concept_embeeding[c]['img'])
-        txt_emb_b = np.array(txt_emb_b).reshape([1, CONCEPT_NUM, D_TXT_EMB])
-        img_emb_b = np.array(img_emb_b).reshape([1, CONCEPT_NUM, D_IMG_EMB])
-        txt_emb_b = np.tile(txt_emb_b, [hp.gpu_num * hp.bc, 1, 1])  # (bc*gpu_num)*48*d_txt
-        img_emb_b = np.tile(img_emb_b, [hp.gpu_num * hp.bc, 1, 1])
-
         # begin training
         ob_loss = []
         timepoint = time.time()
         for step in range(hp.maxstep):
-            features_b, global_embs_b, positions_b, scores_b, concept_labels_b, summary_labels_b, query_indexes_b = \
-                get_batch_train_2stages(data_train, train_scheme, queries, concepts, step, hp)
+            global_embs_b, features_b, concept_embs_b, positions_b, scores_b, concept_labels_b, summary_labels_b, query_indexes_b = \
+                get_batch_train_2stages(data_train, train_scheme, queries, concepts, concept_vid_embeddings, step, hp)
             scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
             observe = sess.run([train_op] + loss_list + concept_logits_list + summary_logits_list + loss_ob_list,
-                               feed_dict={features_holder: features_b,
-                                          global_embs_holder: global_embs_b,
+                               feed_dict={global_embs_holder: global_embs_b,
+                                          features_holder: features_b,
+                                          concept_embs_holder: concept_embs_b,
                                           positions_holder: positions_b,
                                           scores_src_holder: scores_src_b,
                                           concept_labels_holder: concept_labels_b,
                                           summary_labels_holder: summary_labels_b,
                                           qc_indexes_holder: query_indexes_b,
-                                          txt_emb_holder: txt_emb_b,
-                                          img_emb_holder: img_emb_b,
                                           dropout_holder: hp.dropout,
                                           training_holder: True})
 
@@ -687,8 +714,6 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
             # save checkpoint &  evaluate
             epoch = step / epoch_step
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
-                if step == 0 and test_mode == 0:
-                    continue
                 train_scheme = train_scheme_build_2stages(data_train, concepts, query_summary, hp)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
@@ -698,22 +723,19 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                if not int(epoch) % hp.eval_epoch == 0:
-                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 concept_lists = []
                 summary_lists = []
                 for test_step in range(max_test_step):
-                    features_b, global_embs_b, positions_b, scores_b = \
-                        get_batch_test(data_test, test_scheme, test_step, hp)
+                    global_embs_b, features_b, concept_embs_b, positions_b, scores_b = \
+                        get_batch_test(data_test, test_scheme, concepts, concept_vid_embeddings, test_step, hp)
                     scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, CONCEPT_NUM))))  # encoder中开放所有concept节点
                     temp_list = sess.run(concept_logits_list + summary_logits_list,
                                                              feed_dict={features_holder: features_b,
+                                                                        concept_embs_holder: concept_embs_b,
                                                                         global_embs_holder: global_embs_b,
                                                                         positions_holder: positions_b,
                                                                         scores_src_holder: scores_src_b,
-                                                                        txt_emb_holder: txt_emb_b,
-                                                                        img_emb_holder: img_emb_b,
                                                                         dropout_holder: hp.dropout,
                                                                         training_holder: False})
                     for preds in temp_list[ : hp.gpu_num]:
@@ -724,40 +746,19 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
                 p, r, f = evaluation_2stages(concept_lists, summary_lists, query_summary, Tags, test_vids, concepts, queries)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-
-                if test_mode == 1:
-                    return
-                # save model
-                if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
-                    max_f1 = f
-                    model_clear(model_save_dir, max_f1)
-                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
-                    saver_overall.save(sess, model_path)
-                    logging.info('Model Saved: ' + model_path + '\n')
-
-            if step % 3000 == 0 and step > 0:
-                model_path = model_save_dir + 'S%d-E%d' % (step + PRESTEPS, epoch)
-                # saver_overall.save(sess, model_path)
-                logging.info('Model Saved: ' + str(step + PRESTEPS))
-
-            # saving final model
-        model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
-        # saver_overall.save(sess, model_path)
-        logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
+                return f
+    return 0
 
 
 def main(self):
     Tags = load_Tags(TAGS_PATH)
     data = load_feature_4fold(FEATURE_BASE, CONCEPT_LABEL_PATH, SUMMARY_LABEL_PATH, Tags)
     queries, query_summary = load_query_summary(QUERY_SUM_BASE)
-    concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
+    concepts, concept_vid_embeddings = load_concept(CONCEPT_DICT_PATH, CONCEPT_VID_EMB_DIR)
 
     # evaluate all videos in turn
-    kfold_start = int(int(hp.start) / 10)
-    repeat_start = int(hp.start) % 10
+    model_scores = {}
     for kfold in range(4):
-        if kfold < kfold_start:
-            continue
         # split data
         data_train = {}
         data_valid = {}
@@ -782,6 +783,10 @@ def main(self):
         logging.info('Dropout Rate: ' + str(hp.dropout))
         logging.info('Sequence Length: ' + str(hp.seq_len))
         logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+        logging.info('Global Embedding Ratio: ' + str(hp.global_ratio))
+        logging.info('Global Embedding Mode: ' + str(hp.global_mode))
+        logging.info('Concept Embedding Num: ' + str(hp.concept_vid_num))
+        logging.info('Concept Embedding Mode: ' + str(hp.concept_vid_mode))
         logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
         logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
         logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
@@ -789,21 +794,25 @@ def main(self):
         logging.info('*' * 50)
 
         # repeat
+        scores = []
         for i in range(hp.repeat):
-            if kfold == kfold_start and i < repeat_start:
-                continue
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
-            logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
-                         model_save_dir, 0)
-            logging.info('*' * 60)
-            if len(hp.end) > 0:
-                kfold_end = int(int(hp.end) / 10)
-                repeat_end = int(hp.end) % 10
-                if kfold >= kfold_end and i >= repeat_end:
-                    return
-        logging.info('^' * 60 + '\n')
+            models_to_restore = model_search(model_save_dir, observe=hp.observe)
+            for i in range(len(models_to_restore)):
+                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+                model_path = models_to_restore[i]
+                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_vid_embeddings,
+                                 model_path)
+                scores.append(f1)
+        model_scores[str((kfold + 3) % 4 + 1)] = scores
+    scores_all = 0
+    for vid in model_scores:
+        scores = model_scores[vid]
+        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
+                     (vid, np.array(scores).mean(), str(scores)))
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
+
 
 if __name__ == '__main__':
     tf.app.run()
