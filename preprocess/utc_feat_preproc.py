@@ -42,9 +42,6 @@ def frame_capture(vid):
     print('Vid: %s, Frames: %s, Padding: %d' % (video_path, str(frames.shape), padding_num))
     return frames
 
-
-
-
 if __name__ == '__main__':
     if not os.path.isdir(FEATURE_DIR):
         os.makedirs(FEATURE_DIR)

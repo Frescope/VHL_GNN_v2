@@ -18,23 +18,23 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='1',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=25,type=int)
+    parser.add_argument('--seq_len',default=75,type=int)
     parser.add_argument('--bc',default=20,type=int)
-    parser.add_argument('--dropout',default='0.1',type=float)
+    parser.add_argument('--dropout',default='0.0',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=1e-5, type=float)
+    parser.add_argument('--lr_noam', default=100e-6, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
 
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
-    parser.add_argument('--loss_concept_ratio', default=0.75, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_concept_ratio', default=0.50, type=float)  # loss中来自concept_loss的比例
     parser.add_argument('--loss_reconst_ratio', default=0.00, type=float)  # loss中来自reconst_loss的比例
     parser.add_argument('--loss_diverse_ratio', default=0.00, type=float)  # loss中来自diverse_loss的比例
 
@@ -45,7 +45,7 @@ class Path:
 
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch',default=10,type=int)
+    parser.add_argument('--eval_epoch',default=30,type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
 
@@ -428,8 +428,11 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, r
     # loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
     # return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
 
-    ratio = hp.loss_concept_ratio
-    loss = concept_loss * ratio + summary_loss * (1 - ratio)
+    ratio_c = hp.loss_concept_ratio
+    ratio_d = hp.loss_diverse_ratio
+
+    # loss = concept_loss * ratio_c + diverse_loss * ratio_d + summary_loss * (1 - ratio_c - ratio_d)
+    loss = concept_loss * ratio_c + summary_loss * (1 - ratio_c)
     return loss, [concept_loss, summary_loss]
 
 def average_gradients(tower_grads):

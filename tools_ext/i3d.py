@@ -474,7 +474,7 @@ class InceptionI3d(snt.AbstractModule):
     end_points[end_point] = tf.reduce_mean(tf.squeeze(net, [2,3]), axis=1)
     if self._final_endpoint == end_point: return averaged_logits, end_points
 
-    end_point = 'Predictions'  
+    end_point = 'Predictions'
     predictions = tf.nn.softmax(averaged_logits)
     end_points[end_point] = predictions
     return predictions, end_points

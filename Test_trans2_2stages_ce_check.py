@@ -20,7 +20,7 @@ class Path:
     parser.add_argument('--gpu', default='0', type=str)
     parser.add_argument('--num_heads', default=8, type=int)
     parser.add_argument('--num_blocks', default=6, type=int)
-    parser.add_argument('--seq_len', default=25, type=int)
+    parser.add_argument('--seq_len', default=75, type=int)
     parser.add_argument('--bc', default=20, type=int)
     parser.add_argument('--dropout', default='0.1', type=float)
     parser.add_argument('--gpu_num', default=1, type=int)
@@ -34,7 +34,7 @@ class Path:
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
-    parser.add_argument('--loss_concept_ratio', default=0.75, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_concept_ratio', default=0.50, type=float)  # loss中来自concept_loss的比例
     parser.add_argument('--loss_reconst_ratio', default=0.00, type=float)  # loss中来自reconst_loss的比例
     parser.add_argument('--loss_diverse_ratio', default=0.00, type=float)  # loss中来自diverse_loss的比例
 
