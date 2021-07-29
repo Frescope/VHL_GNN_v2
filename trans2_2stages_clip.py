@@ -18,7 +18,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='1',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=25,type=int)  # clip数量
@@ -45,7 +45,7 @@ class Path:
 
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch',default=10,type=int)
+    parser.add_argument('--eval_epoch',default=1,type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
 

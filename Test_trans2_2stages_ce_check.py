@@ -390,23 +390,48 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, r
     # 对summary_loss，计算各个shot在其取样时对应的query上的NCE-Loss（为了防止负例比例过高）
     # 合并上述两种loss
 
+    # # for concept
+    # concept_logits = tf.transpose(concept_logits, perm=(0, 2, 1))  # bc*48*seq_len
+    # concept_logits = tf.reshape(concept_logits, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
+    # concept_labels_flat = tf.transpose(concept_labels, perm=(0, 2, 1))
+    # concept_labels_flat = tf.reshape(concept_labels_flat, shape=(-1, hp.seq_len))
+    # labels_binary = tf.cast(tf.cast(concept_labels_flat, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+    #
+    # nce_pos = tf.reduce_sum(tf.exp(labels_binary * concept_logits), axis=1)  # 分子
+    # nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
+    # nce_all = tf.reduce_sum(tf.exp(concept_logits), axis=1)  # 分母
+    # nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
+    # concept_loss = tf.reduce_mean(nce_loss)
+
     # for concept
     concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
     concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
     concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
     concept_loss = tf.reduce_mean(concept_loss)
 
+    # # for summary
+    # labels_binary = tf.cast(tf.cast(seq_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+    # nce_pos = tf.reduce_sum(tf.exp(labels_binary * seq_logits), axis=1)  # 分子
+    # nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
+    # nce_all = tf.reduce_sum(tf.exp(seq_logits), axis=1)  # 分母
+    # nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
+    # summary_loss = tf.reduce_mean(nce_loss)
+
     # for summary
     seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
     summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
     summary_loss = tf.reduce_mean(summary_loss)
 
-    # # for reconstruction
+    # for reconstruction
     # reconst_loss = tf.losses.mean_squared_error(reconst_vecs, features)
-    # reconst_loss /= 1000
-    #
+    # reconst_loss /= D_FEATURE
+    reconst_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+
     # # for diversity
-    # diverse_labels = tf.reduce_sum(concept_labels, axis=2)  # 取所有concept正例的并集
+    # seq_mean = tf.reduce_mean(seq_logits, axis=1, keep_dims=True)  # 对每个序列的最终预测求均值，作为门限
+    # seq_mean = tf.tile(seq_mean, [1, hp.seq_len])
+    # diverse_labels = tf.greater(seq_logits, seq_mean)  # bc*seqlen
+    # diverse_labels = tf.cast(diverse_labels, dtype=tf.float32)
     # labels_binary = tf.cast(tf.cast(diverse_labels, dtype=tf.bool), dtype=tf.float32)
     # labels_binary = tf.expand_dims(labels_binary, -1)  # bc*seq_len*1
     #
@@ -418,19 +443,23 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, r
     # Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*seqlen
     # Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*seqlen*seqlen
     #
-    # diverse_loss = tf.reduce_mean(Products / (Mag_product + 1e-8))
+    # diverse_loss = tf.reduce_sum(Products / (Mag_product + 1e-8)) / (hp.seq_len - 1) / hp.seq_len
+    diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
-    # # total loss
-    # r_c = hp.loss_concept_ratio
-    # r_r = hp.loss_reconst_ratio
-    # r_d = hp.loss_diverse_ratio
-    # r_s = 1 - r_c - r_r - r_d
-    # loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
-    # return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
+    # total loss
+    r_c = hp.loss_concept_ratio
+    r_r = hp.loss_reconst_ratio
+    r_d = hp.loss_diverse_ratio
+    r_s = 1 - r_c - r_r - r_d
+    loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
+    return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
 
-    ratio = hp.loss_concept_ratio
-    loss = concept_loss * ratio + summary_loss * (1 - ratio)
-    return loss, [concept_loss, summary_loss]
+    # ratio_c = hp.loss_concept_ratio
+    # ratio_d = hp.loss_diverse_ratio
+    #
+    # loss = concept_loss * ratio_c + diverse_loss * ratio_d + summary_loss * (1 - ratio_c - ratio_d)
+    # # loss = concept_loss * ratio_c + summary_loss * (1 - ratio_c)
+    # return loss, [concept_loss, summary_loss, diverse_loss]
 
 def average_gradients(tower_grads):
     average_grads = []
