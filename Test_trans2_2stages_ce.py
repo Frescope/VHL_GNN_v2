@@ -323,7 +323,7 @@ def get_batch_train_2stages(data_train, train_scheme, queries, concepts, step, h
     qc_indexes = np.array(qc_indexes)
     scores = np.ones((batch_num, hp.seq_len + 1))  # 多一个全局嵌入
     return features, global_embs, positions, scores, concept_labels, summary_labels, qc_indexes
- 
+
 def test_scheme_build(data_test, seq_len):
     # 依次输入测试集中所有clip，不足seqlen的要补足，在getbatch中补足不够一个batch的部分
     # (vid, seq_start, seq_end)形式

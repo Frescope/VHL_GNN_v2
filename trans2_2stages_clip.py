@@ -18,7 +18,7 @@ import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--seq_len',default=25,type=int)  # clip数量
@@ -27,7 +27,7 @@ class Path:
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=100e-6, type=float)
+    parser.add_argument('--lr_noam', default=10e-6, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
 
@@ -45,7 +45,7 @@ class Path:
 
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--eval_epoch',default=10,type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
 
@@ -382,49 +382,68 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, r
     # 合并上述两种loss
 
     # for concept
-    concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
-    concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
-    concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
-    concept_loss = tf.reduce_mean(concept_loss)
+    concept_logits = tf.transpose(concept_logits, perm=(0, 2, 1))  # bc*48*seq_len
+    concept_logits = tf.reshape(concept_logits, shape=(-1, hp.seq_len * 5))  # (bc*48)*seq_len
+    concept_labels_flat = tf.transpose(concept_labels, perm=(0, 2, 1))
+    concept_labels_flat = tf.reshape(concept_labels_flat, shape=(-1, hp.seq_len * 5))
+    labels_binary = tf.cast(tf.cast(concept_labels_flat, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+
+    nce_pos = tf.reduce_sum(tf.exp(labels_binary * concept_logits), axis=1)  # 分子
+    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
+    nce_all = tf.reduce_sum(tf.exp(concept_logits), axis=1)  # 分母
+    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
+    concept_loss = tf.reduce_mean(nce_loss)
+
+    # # for concept
+    # concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
+    # concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
+    # concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
+    # concept_loss = tf.reduce_mean(concept_loss)
 
     # for summary
-    seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
-    summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
-    summary_loss = tf.reduce_mean(summary_loss)
+    labels_binary = tf.cast(tf.cast(seq_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+    nce_pos = tf.reduce_sum(tf.exp(labels_binary * seq_logits), axis=1)  # 分子
+    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
+    nce_all = tf.reduce_sum(tf.exp(seq_logits), axis=1)  # 分母
+    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
+    summary_loss = tf.reduce_mean(nce_loss)
+
+    # # for summary
+    # seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
+    # summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
+    # summary_loss = tf.reduce_mean(summary_loss)
 
     # # for reconstruction
-    # reconst_loss = tf.losses.mean_squared_error(reconst_vecs, features)
-    # reconst_loss /= 1000
-    #
+    reconst_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+
     # # for diversity
-    # diverse_labels = tf.reduce_sum(concept_labels, axis=2)  # 取所有concept正例的并集
-    # labels_binary = tf.cast(tf.cast(diverse_labels, dtype=tf.bool), dtype=tf.float32)
-    # labels_binary = tf.expand_dims(labels_binary, -1)  # bc*seq_len*1
-    #
-    # KeyVecs = reconst_vecs * labels_binary  # 遮蔽非关键片段，bc*seqlen*D
-    # KeyVecs_T = tf.transpose(KeyVecs, perm=(0, 2, 1))  # bc*D*seqlen
-    # Products = tf.matmul(KeyVecs, KeyVecs_T)  # 点积，bc*seqlen*seqlen
-    #
-    # Magnitude = tf.sqrt(tf.reduce_sum(tf.square(KeyVecs), axis=2, keep_dims=True))  # 求模，bc*seqlen*1
-    # Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*seqlen
-    # Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*seqlen*seqlen
-    #
-    # diverse_loss = tf.reduce_mean(Products / (Mag_product + 1e-8))
+    if hp.loss_diverse_ratio > 0.01:
+        seq_mean = tf.reduce_mean(seq_logits, axis=1, keep_dims=True)  # 对每个序列的最终预测求均值，作为门限
+        seq_mean = tf.tile(seq_mean, [1, hp.seq_len * 5])
+        diverse_labels = tf.greater(seq_logits, seq_mean)  # bc*seqlen
+        diverse_labels = tf.cast(diverse_labels, dtype=tf.float32)
+        labels_binary = tf.cast(tf.cast(diverse_labels, dtype=tf.bool), dtype=tf.float32)
+        labels_binary = tf.expand_dims(labels_binary, -1)  # bc*seq_len*1
 
-    # # total loss
-    # r_c = hp.loss_concept_ratio
-    # r_r = hp.loss_reconst_ratio
-    # r_d = hp.loss_diverse_ratio
-    # r_s = 1 - r_c - r_r - r_d
-    # loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
-    # return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
+        KeyVecs = reconst_vecs * labels_binary  # 遮蔽非关键片段，bc*seqlen*D
+        KeyVecs_T = tf.transpose(KeyVecs, perm=(0, 2, 1))  # bc*D*seqlen
+        Products = tf.matmul(KeyVecs, KeyVecs_T)  # 点积，bc*seqlen*seqlen
 
-    ratio_c = hp.loss_concept_ratio
-    ratio_d = hp.loss_diverse_ratio
+        Magnitude = tf.sqrt(tf.reduce_sum(tf.square(KeyVecs), axis=2, keep_dims=True))  # 求模，bc*seqlen*1
+        Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*seqlen
+        Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*seqlen*seqlen
 
-    # loss = concept_loss * ratio_c + diverse_loss * ratio_d + summary_loss * (1 - ratio_c - ratio_d)
-    loss = concept_loss * ratio_c + summary_loss * (1 - ratio_c)
-    return loss, [concept_loss, summary_loss]
+        diverse_loss = tf.reduce_sum(Products / (Mag_product + 1e-8)) / (hp.seq_len * 5 - 1) / (hp.seq_len * 5)
+    else:
+        diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+
+    # total loss
+    r_c = hp.loss_concept_ratio
+    r_r = hp.loss_reconst_ratio
+    r_d = hp.loss_diverse_ratio
+    r_s = 1 - r_c - r_r - r_d
+    loss = concept_loss * r_c + reconst_loss * r_r + diverse_loss * r_d + summary_loss * r_s
+    return loss, [concept_loss, reconst_loss, diverse_loss, summary_loss]
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -715,10 +734,9 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 ob_sub_loss.clear()
                 logging.info(' Step %d: %.3f sec' % (step, duration))
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
-                logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
-                    np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                # logging.info('C_Loss: %.4f R_Loss: %.4f D_Loss: %.4f S_Loss: %.4f' %
-                #              (sub_loss_array[0],sub_loss_array[1],sub_loss_array[2],sub_loss_array[3]))
+                logging.info(' Average Loss: ' + str(np.mean(loss_array)))
+                logging.info('C_Loss: %.4f R_Loss: %.4f D_Loss: %.4f S_Loss: %.4f' %
+                             (sub_loss_array[0],sub_loss_array[1],sub_loss_array[2],sub_loss_array[3]))
                 if not int(epoch) % hp.eval_epoch == 0:
                     continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
