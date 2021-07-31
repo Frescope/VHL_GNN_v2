@@ -47,8 +47,8 @@ class Path:
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch',default=1,type=int)
-    parser.add_argument('--start', default='20', type=str)
-    parser.add_argument('--end', default='20', type=str)
+    parser.add_argument('--start', default='00', type=str)
+    parser.add_argument('--end', default='', type=str)
 
 hparams = Path()
 parser = hparams.parser
