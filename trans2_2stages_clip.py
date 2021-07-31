@@ -71,7 +71,7 @@ CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold2
 
-LOAD_CKPT_MODEL = True
+LOAD_CKPT_MODEL = False
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -835,10 +835,10 @@ def main(self):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
-            # run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
-            #              model_save_dir, 0)
-            run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                         model_save_dir, 1)
+            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
+                         model_save_dir, 0)
+            # run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
+            #              model_save_dir, 1)
             logging.info('*' * 60)
             if len(hp.end) > 0:
                 kfold_end = int(int(hp.end) / 10)
