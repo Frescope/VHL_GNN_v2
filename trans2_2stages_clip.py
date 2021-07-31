@@ -21,20 +21,21 @@ class Path:
     parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--seq_len',default=25,type=int)  # clip数量
+    parser.add_argument('--seq_len',default=15,type=int)  # clip数量
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default='0.0',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
-    parser.add_argument('--msd', default='video_trans', type=str)
+    parser.add_argument('--msd', default='clip', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=10e-6, type=float)
+    parser.add_argument('--lr_noam', default=50e-6, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
+    parser.add_argument('--protection', default=1000, type=int)  # 不检查步数太小的模型
 
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
-    parser.add_argument('--loss_concept_ratio', default=0.50, type=float)  # loss中来自concept_loss的比例
+    parser.add_argument('--loss_concept_ratio', default=0.75, type=float)  # loss中来自concept_loss的比例
     parser.add_argument('--loss_reconst_ratio', default=0.00, type=float)  # loss中来自reconst_loss的比例
     parser.add_argument('--loss_diverse_ratio', default=0.00, type=float)  # loss中来自diverse_loss的比例
 
@@ -45,9 +46,9 @@ class Path:
 
     parser.add_argument('--repeat',default=3,type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch',default=10,type=int)
-    parser.add_argument('--start', default='00', type=str)
-    parser.add_argument('--end', default='', type=str)
+    parser.add_argument('--eval_epoch',default=1,type=int)
+    parser.add_argument('--start', default='20', type=str)
+    parser.add_argument('--end', default='20', type=str)
 
 hparams = Path()
 parser = hparams.parser
@@ -70,7 +71,7 @@ CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold2
 
-LOAD_CKPT_MODEL = False
+LOAD_CKPT_MODEL = True
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -95,7 +96,7 @@ else:
     CONCEPT_DICT_PATH = r'/data/linkang/VHL_GNN/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_PATH = r'/data/linkang/VHL_GNN/utc/concept_clip.pkl'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
-    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/utc_SA/'
+    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/clip_15s/S23580-E180-L1.048957-F0.481'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -381,37 +382,37 @@ def tower_loss_2stages(concept_logits, concept_labels, seq_logits, seq_labels, r
     # 对summary_loss，计算各个shot在其取样时对应的query上的NCE-Loss（为了防止负例比例过高）
     # 合并上述两种loss
 
-    # for concept
-    concept_logits = tf.transpose(concept_logits, perm=(0, 2, 1))  # bc*48*seq_len
-    concept_logits = tf.reshape(concept_logits, shape=(-1, hp.seq_len * 5))  # (bc*48)*seq_len
-    concept_labels_flat = tf.transpose(concept_labels, perm=(0, 2, 1))
-    concept_labels_flat = tf.reshape(concept_labels_flat, shape=(-1, hp.seq_len * 5))
-    labels_binary = tf.cast(tf.cast(concept_labels_flat, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-
-    nce_pos = tf.reduce_sum(tf.exp(labels_binary * concept_logits), axis=1)  # 分子
-    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(concept_logits), axis=1)  # 分母
-    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
-    concept_loss = tf.reduce_mean(nce_loss)
-
     # # for concept
-    # concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
-    # concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
-    # concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
-    # concept_loss = tf.reduce_mean(concept_loss)
+    # concept_logits = tf.transpose(concept_logits, perm=(0, 2, 1))  # bc*48*seq_len
+    # concept_logits = tf.reshape(concept_logits, shape=(-1, hp.seq_len * 5))  # (bc*48)*seq_len
+    # concept_labels_flat = tf.transpose(concept_labels, perm=(0, 2, 1))
+    # concept_labels_flat = tf.reshape(concept_labels_flat, shape=(-1, hp.seq_len * 5))
+    # labels_binary = tf.cast(tf.cast(concept_labels_flat, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+    #
+    # nce_pos = tf.reduce_sum(tf.exp(labels_binary * concept_logits), axis=1)  # 分子
+    # nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
+    # nce_all = tf.reduce_sum(tf.exp(concept_logits), axis=1)  # 分母
+    # nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
+    # concept_loss = tf.reduce_mean(nce_loss)
 
-    # for summary
-    labels_binary = tf.cast(tf.cast(seq_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
-    nce_pos = tf.reduce_sum(tf.exp(labels_binary * seq_logits), axis=1)  # 分子
-    nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
-    nce_all = tf.reduce_sum(tf.exp(seq_logits), axis=1)  # 分母
-    nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
-    summary_loss = tf.reduce_mean(nce_loss)
+    # for concept
+    concept_logits = tf.clip_by_value(concept_logits, 1e-6, 0.999999)
+    concept_labels_bin = tf.cast(tf.cast(concept_labels, dtype=tf.bool), dtype=tf.float32)
+    concept_loss = - concept_labels_bin * tf.log(concept_logits) - (1 - concept_labels_bin) * tf.log(1 - concept_logits)
+    concept_loss = tf.reduce_mean(concept_loss)
 
     # # for summary
-    # seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
-    # summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
-    # summary_loss = tf.reduce_mean(summary_loss)
+    # labels_binary = tf.cast(tf.cast(seq_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+    # nce_pos = tf.reduce_sum(tf.exp(labels_binary * seq_logits), axis=1)  # 分子
+    # nce_pos -= tf.reduce_sum((1 - labels_binary), axis=1)  # 减去负例（为零）取e后的值（为1）
+    # nce_all = tf.reduce_sum(tf.exp(seq_logits), axis=1)  # 分母
+    # nce_loss = -tf.log((nce_pos / nce_all) + 1e-5)
+    # summary_loss = tf.reduce_mean(nce_loss)
+
+    # for summary
+    seq_logits = tf.clip_by_value(seq_logits, 1e-6, 0.999999)
+    summary_loss = - seq_labels * tf.log(seq_logits) - (1 - seq_labels) * tf.log(1 - seq_logits)
+    summary_loss = tf.reduce_mean(summary_loss)
 
     # # for reconstruction
     reconst_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
@@ -735,9 +736,9 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 logging.info(' Step %d: %.3f sec' % (step, duration))
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)))
-                logging.info('C_Loss: %.4f R_Loss: %.4f D_Loss: %.4f S_Loss: %.4f' %
+                logging.info(' C_Loss: %.4f R_Loss: %.4f D_Loss: %.4f S_Loss: %.4f' %
                              (sub_loss_array[0],sub_loss_array[1],sub_loss_array[2],sub_loss_array[3]))
-                if not int(epoch) % hp.eval_epoch == 0:
+                if step < hp.protection or not int(epoch) % hp.eval_epoch == 0:
                     continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 concept_lists = []
@@ -834,8 +835,10 @@ def main(self):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
-                         model_save_dir, 0)
+            # run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding,
+            #              model_save_dir, 0)
+            run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
+                         model_save_dir, 1)
             logging.info('*' * 60)
             if len(hp.end) > 0:
                 kfold_end = int(int(hp.end) / 10)

@@ -26,9 +26,9 @@ class Path:
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default='0.0',type=float)
     parser.add_argument('--gpu_num',default=1,type=int)
-    parser.add_argument('--msd', default='video_trans', type=str)
+    parser.add_argument('--msd', default='clip', type=str)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--lr_noam', default=100e-6, type=float)
+    parser.add_argument('--lr_noam', default=50e-6, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100000, type=int)
 
