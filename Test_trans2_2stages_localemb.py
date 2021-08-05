@@ -208,7 +208,7 @@ def load_concept(dict_path, txt_emb_path, img_emb_dir):
 def get_local_embeddings(data, hp, ratio):
     # 首先将视频划分为固定数量的长分段，从每个分段中按照一定的比例抽样，再聚合
     vlength = len(data['concept_label'])
-    segment_len = math.ceil(vlength / hp.local_len)
+    segment_len = math.floor(vlength / hp.local_len)
     embs = []
     for i in range(hp.local_len):
         seg_start = i * segment_len
