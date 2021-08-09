@@ -10,6 +10,7 @@ TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
 CONCEPT_LABEL_PATH = r'/data/linkang/VHL_GNN/utc/concept_label.json'
 SUMMARY_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Global_Summaries/'
 QUERY_SUM_BASE = r'/data/linkang/VHL_GNN/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
+CONCEPT_DICT_PATH = r'/data/linkang/VHL_GNN/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
 
 SHOTS_NUMS = [2783, 3692, 2152, 3588]
 
@@ -26,7 +27,6 @@ class NpEncoder(json.JSONEncoder):
         else:
             return super(NpEncoder, self).default(obj)
 
-# 验证concept_labels与Tags
 def load(Tags_path, concept_label_path):
     # 从Tags中加载每个视频中每个shot对应的concept标签
     Tags = []
@@ -49,6 +49,7 @@ def load(Tags_path, concept_label_path):
     return Tags, concept_labels
 
 def check():
+    # 验证concept_labels与Tags的一致性
     Tags, concept_labels = load(TAGS_PATH, CONCEPT_LABEL_PATH)
     for i in range(len(Tags)):
         tags = Tags[i]
@@ -60,8 +61,6 @@ def check():
                 print(tags[j])
                 print(labels[j])
                 print()
-
-# check()
 
 # 提取generic summary label
 def load_summary(summary_base):
@@ -84,8 +83,8 @@ def label_build(summary):
         summary_labels[str(i + 1)] = labels
     return summary_labels
 
-summary = load_summary(SUMMARY_BASE)
-summary_labels = label_build(summary)
+# summary = load_summary(SUMMARY_BASE)
+# summary_labels = label_build(summary)
 # with open(r'/data/linkang/VHL_GNN/utc/summary_label.json', 'w') as file:
 #     json.dump(summary_labels, file, cls=NpEncoder)
 # print('Done !')
@@ -119,7 +118,10 @@ def load_query_summary(query_sum_base):
     return queries, summary
 
 def check2():
+    # 检查generic标签与每个query标签的重叠程度
     queries, query_summary = load_query_summary(QUERY_SUM_BASE)
+    summary = load_summary(SUMMARY_BASE)
+    summary_labels = label_build(summary)
     for i in range(1, 5):
         s_labels = np.array(summary_labels[str(i)])
         s_shots = np.where(s_labels > 0)[0]
@@ -134,4 +136,36 @@ def check2():
             #       (len(s_shots), len(s_shots)/len(union), len(q_shots), len(q_shots)/len(union)))
         print()
 
-check2()
+def check3():
+    # 对于每个query，以Tags中所有与concept相关的shot以及summary中的shot为候选集，检查候选集对这一query的shot的覆盖度
+    queries, query_summary = load_query_summary(QUERY_SUM_BASE)
+    generic_summary = load_summary(SUMMARY_BASE)
+    Tags, concept_labels = load(TAGS_PATH, CONCEPT_LABEL_PATH)
+    concepts = []
+    with open(CONCEPT_DICT_PATH, 'r') as f:
+        for word in f.readlines():
+            concepts.append(word.strip().split("'")[1])
+    concepts.sort()
+    ratio_all = []
+    for i in range(1, 5):
+        q_summary = query_summary[str(i)]
+        g_summary = generic_summary[str(i)]
+        tags = Tags[i - 1]
+        for query in q_summary:
+            c1, c2 = query.split('_')
+            c1_ind = concepts.index(c1)
+            c2_ind = concepts.index(c2)
+            c1_tag = list(np.where(tags[:, c1_ind] > 0)[0])
+            c2_tag = list(np.where(tags[:, c2_ind] > 0)[0])
+            candidate = set(c1_tag + c2_tag + g_summary)
+            truth = q_summary[query]
+            remains = set(truth) - candidate
+            remains_ratio = len(remains) / len(truth)
+            ratio_all.append(remains_ratio)
+            print(i, query)
+            print('Candidate: %d, GT: %d, Remains: %d, Ratio: %.3f' %
+                  (len(candidate), len(truth), len(remains), remains_ratio))
+        print()
+    print('Avg Ratio: %.3f' % np.array(ratio_all).mean())
+
+check3()
