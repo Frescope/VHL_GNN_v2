@@ -55,7 +55,7 @@ class Path:
     parser.add_argument('--loss_summary_ratio', default=0.10, type=float)  # loss中来自summary_loss的比例
     parser.add_argument('--loss_pred_s1_ratio', default=0.50, type=float)  # loss中来自prediction_s1的比例
     parser.add_argument('--loss_pred_s2_ratio', default=0.30, type=float)  # loss中来自prediction_s2的比例
-    parser.add_argument('--loss_diverse_ratio', default=0.00, type=float)  # loss中来自diverse_loss的比例
+    parser.add_argument('--loss_diverse_ratio', default=0.05, type=float)  # loss中来自diverse_loss的比例
 
     # 预测参数，不同分支在总预测中的比例
     parser.add_argument('--pred_candidate_ratio', default=0.25, type=float)  # prediction中来自候选集得分的比例
@@ -98,7 +98,7 @@ if hp.server == 0:
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
     S1_LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s1.json'
     S2_LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s2.json'
-    SUMMARY_LABEL_PATH = r'/public/data1/users/hulinkang/utc/summary_label.json'
+    SUMMARY_LABEL_PATH = r'/public/data1/users/hulinkang/utc/e.json'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     CONCEPT_DICT_PATH = r'/public/data1/users/hulinkang/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
@@ -537,7 +537,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
         # 计算intersection-over-union
         intersection = shot_i * shot_j
         union = (shot_i + shot_j).astype('bool').astype('int')
-        return np.sum(intersection) / np.sum(union)
+        return np.sum(intersection) / (np.sum(union) + 1e-9)
 
     vTags = Tags[vid-1]
     shot_num1 = len(shot_seq1)

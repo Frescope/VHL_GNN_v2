@@ -537,7 +537,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
         # 计算intersection-over-union
         intersection = shot_i * shot_j
         union = (shot_i + shot_j).astype('bool').astype('int')
-        return np.sum(intersection) / np.sum(union)
+        return np.sum(intersection) / (np.sum(union) + 1e-9)
 
     vTags = Tags[vid-1]
     shot_num1 = len(shot_seq1)
