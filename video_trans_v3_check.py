@@ -69,7 +69,7 @@ hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
 
-if hp.server == 0:
+if hp.server != 1:
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 else:
