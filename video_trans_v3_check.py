@@ -105,7 +105,7 @@ if hp.server == 0:
     CONCEPT_IMG_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_HL_utc_query/'
     CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
-else:
+elif hp.server == 1:
     # path for USTC servers
     FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
     TAGS_PATH = r'/data/linkang/VHL_GNN/utc/Tags.mat'
@@ -118,6 +118,19 @@ else:
     CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
     CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/utc_SA/'
+else:
+    # path for JD A100 Server, make sure that VHL_GNN_V2 and utc folder are under the same directory
+    FEATURE_BASE = r'../utc/features/'
+    TAGS_PATH = r'../utc/Tags.mat'
+    S1_LABEL_PATH = r'../utc/videotrans_label_s1.json'
+    S2_LABEL_PATH = r'../utc/videotrans_label_s2.json'
+    SUMMARY_LABEL_PATH = r'../utc/summary_label.json'
+    QUERY_SUM_BASE = r'../utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
+    CONCEPT_DICT_PATH = r'../utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
+    CONCEPT_TXT_EMB_PATH = r'../utc/processed/query_dictionary.pkl'
+    CONCEPT_IMG_EMB_DIR = r'../utc/concept_embeddding/'
+    MODEL_SAVE_BASE = r'/home/models/'
+    CKPT_MODEL_PATH = r'/home/models/'
 
 logging.basicConfig(level=logging.INFO)
 
