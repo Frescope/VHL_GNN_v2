@@ -98,7 +98,7 @@ if hp.server == 0:
     TAGS_PATH = r'/public/data1/users/hulinkang/utc/Tags.mat'
     S1_LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s1.json'
     S2_LABEL_PATH = r'/public/data1/users/hulinkang/utc/videotrans_label_s2.json'
-    SUMMARY_LABEL_PATH = r'/public/data1/users/hulinkang/utc/e.json'
+    SUMMARY_LABEL_PATH = r'/data/linkang/VHL_GNN/utc/summary_label.json'
     QUERY_SUM_BASE = r'/public/data1/users/hulinkang/utc/origin_data/Query-Focused_Summaries/Oracle_Summaries/'
     CONCEPT_DICT_PATH = r'/public/data1/users/hulinkang/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
