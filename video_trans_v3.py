@@ -9,7 +9,10 @@
 import os
 import time
 import numpy as np
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
+
 import math
 import json
 import random
@@ -72,11 +75,11 @@ hp = parser.parse_args()
 if hp.server != 1:
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
     os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 else:
     tf.logging.set_verbosity(tf.logging.ERROR)
     os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
 # D_FEATURE = 2048  # for resnet

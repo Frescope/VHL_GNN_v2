@@ -24,7 +24,7 @@ import pickle
 from transformer_v3 import transformer
 import networkx as nx
 
-class Path: 
+class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
     parser.add_argument('--gpu', default='0',type=str)
@@ -73,11 +73,11 @@ parser = hparams.parser
 hp = parser.parse_args()
 
 if hp.server != 1:
-    # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+    tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
     os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
     # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 else:
-    # tf.logging.set_verbosity(tf.logging.ERROR)
+    tf.logging.set_verbosity(tf.logging.ERROR)
     os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
     # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
