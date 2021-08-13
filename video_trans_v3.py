@@ -43,6 +43,7 @@ class Path:
     parser.add_argument('--eval_epoch', default=10, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
+    parser.add_argument('--protection', default=5000, type=int)  # 不检查步数太小的模型
 
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
@@ -857,7 +858,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
                 logging.info('Concept_Loss: %.4f Summary_Loss: %.4f S1_Loss: %.4f S2_Loss: %.4f Diverse_Loss: %.4f' %
                              (sub_loss_array[0],sub_loss_array[1],sub_loss_array[2],sub_loss_array[3],sub_loss_array[4]))
-                if not int(epoch) % hp.eval_epoch == 0:
+                if step < hp.protection or not int(epoch) % hp.eval_epoch == 0:
                     continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 concept_lists = []

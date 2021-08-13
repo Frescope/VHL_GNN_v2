@@ -43,6 +43,7 @@ class Path:
     parser.add_argument('--eval_epoch', default=10, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
+    parser.add_argument('--protection', default=5000, type=int)  # 不检查步数太小的模型
 
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
