@@ -1,10 +1,4 @@
-# 基于trans2的两阶段模型改进，模型输出三种预测：concept，summary，prediction
-# concept使用Tags作为标签训练，用于确定每个shot都与哪些concept相关，输出N*48的矩阵
-# summary使用generic summary标签训练，用于找出每个shot是否是属于summary序列的，输出长为N的向量
-# prediction使用s1，s2标签训练，用于做出最终预测，输出N*48的矩阵，对这一矩阵使用s1标签训练；在每次训练时计算对特定query的最终预测后用s2标签训练
-# 构建候选集：使用soft（加权求和）的方法构建候选集，将concept的结果与summary的结果做归一化，用取max的方法合并，作为每个shot的soft-候选集得分
-# 最终预测过程：在prediction的结果中取出与query相关的两组预测，求和后加上soft-候选集得分，作为最终预测
-# 沿用两阶段模型的序列构建方式，对于两个concept(s1)与query(s2)本身分别提取正例与负例
+# 观察模型的预测过程
 
 import os
 import time
@@ -18,6 +12,7 @@ import json
 import random
 import logging
 import argparse
+
 import scipy.io
 import h5py
 import pickle
@@ -27,7 +22,7 @@ import networkx as nx
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='3',type=str)
+    parser.add_argument('--gpu', default='2haode',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -35,9 +30,9 @@ class Path:
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default='0.1',type=float)
-    parser.add_argument('--lr_noam', default=1e-5, type=float)
-    parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=100000, type=int)
+    parser.add_argument('--lr_noam', default=5e-5, type=float)
+    parser.add_argument('--warmup', default=10000, type=int)
+    parser.add_argument('--maxstep', default=50000, type=int)
     parser.add_argument('--repeat', default=3, type=int)
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch', default=10, type=int)
@@ -57,8 +52,8 @@ class Path:
     # loss参数，不同loss所占比例
     parser.add_argument('--loss_concept_ratio', default=0.10, type=float)  # loss中来自concept_loss的比例
     parser.add_argument('--loss_summary_ratio', default=0.10, type=float)  # loss中来自summary_loss的比例
-    parser.add_argument('--loss_pred_s1_ratio', default=0.50, type=float)  # loss中来自prediction_s1的比例
-    parser.add_argument('--loss_pred_s2_ratio', default=0.30, type=float)  # loss中来自prediction_s2的比例
+    parser.add_argument('--loss_pred_s1_ratio', default=0.40, type=float)  # loss中来自prediction_s1的比例
+    parser.add_argument('--loss_pred_s2_ratio', default=0.40, type=float)  # loss中来自prediction_s2的比例
     parser.add_argument('--loss_diverse_ratio', default=0.05, type=float)  # loss中来自diverse_loss的比例
 
     # 预测参数，不同分支在总预测中的比例
@@ -72,15 +67,12 @@ class Path:
 hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
+os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
 
 if hp.server != 1:
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-    os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
-    # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 else:
     tf.logging.set_verbosity(tf.logging.ERROR)
-    os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
-    # os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # global paras
 # D_FEATURE = 2048  # for resnet
@@ -122,7 +114,7 @@ elif hp.server == 1:
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
-    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/utc_SA/'
+    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/trans3_12b_k2/S26400-E300-L2.016940-F0.484'
 else:
     # path for JD A100 Server, make sure that VHL_GNN_V2 and utc folder are under the same directory
     FEATURE_BASE = r'../utc/features/'
@@ -138,6 +130,17 @@ else:
     CKPT_MODEL_PATH = r'/home/models/'
 
 logging.basicConfig(level=logging.INFO)
+
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return super(NpEncoder, self).default(obj)
 
 def load_Tags(Tags_path):
     # 从Tags中加载每个视频中每个shot对应的concept标签
@@ -581,6 +584,8 @@ def evaluation_2stages(concept_lists, summary_lists, pred_s1_lists, query_summar
         s_logits = np.hstack((s_logits, summary_lists[i]))
         p_logits = np.vstack((p_logits, pred_s1_lists[i]))
 
+    pred_outputs = {}
+
     pos = 0
     PRE_values = []
     REC_values = []
@@ -593,6 +598,12 @@ def evaluation_2stages(concept_lists, summary_lists, pred_s1_lists, query_summar
         s_predictions = s_logits[pos : pos + vlength]
         p_predictions = p_logits[pos : pos + vlength]
         pos += vlength
+
+        pred_outputs[vid] = {}
+        pred_outputs[vid]['c_preds'] = c_predictions
+        pred_outputs[vid]['s_preds'] = s_predictions
+        pred_outputs[vid]['p_preds'] = p_predictions
+
         for query in summary:
             shots_gt = summary[query]
             q_ind = queries[vid].index(query)
@@ -627,10 +638,22 @@ def evaluation_2stages(concept_lists, summary_lists, pred_s1_lists, query_summar
             PRE_values.append(precision)
             REC_values.append(recall)
             F1_values.append(f1)
-    PRE_values = np.array(PRE_values)
-    REC_values = np.array(REC_values)
-    F1_values = np.array(F1_values)
-    return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
+
+            pred_outputs[vid][query] = {}
+            pred_outputs[vid][query]['pred_c1'] = pred_c1
+            pred_outputs[vid][query]['pred_c2'] = pred_c2
+            pred_outputs[vid][query]['candidate'] = candidate
+            pred_outputs[vid][query]['scores'] = scores
+            pred_outputs[vid][query]['shots_pred'] = shots_pred
+            pred_outputs[vid][query]['shots_gt'] = shots_gt
+            pred_outputs[vid][query]['prf'] = [precision, recall, f1]
+
+    PRE_value = np.array(PRE_values).mean()
+    REC_value = np.array(REC_values).mean()
+    F1_value = np.array(F1_values).mean()
+
+    pred_outputs['PRF'] = [PRE_value, REC_value, F1_value]
+    return PRE_value, REC_value, F1_value, pred_outputs
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
@@ -642,37 +665,19 @@ def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     step = tf.cast(global_step + 1, dtype=tf.float32)
     return init_lr * warmup_steps ** 0.5 * tf.minimum(step * warmup_steps ** -1.5, step ** -0.5)
 
-def model_search(model_save_dir, observe):
-    def takestep(name):
-        return int(name.split('-')[0].split('S')[-1])
-    # 找到要验证的模型名称
-    model_to_restore = []
-    for root,dirs,files in os.walk(model_save_dir):
-        for file in files:
-            if file.endswith('.meta'):
-                model_name = file.split('.meta')[0]
-                model_to_restore.append(os.path.join(root, model_name))
-    model_to_restore = list(set(model_to_restore))
-    # model_to_restore.sort(key=takestep)
-    #
-    # if observe == 0:
-    #     # 只取最高F1的模型
-    #     model_kfold = []
-    #     f1s = []
-    #     for name in model_to_restore:
-    #         f1 = name.split('-')[-1]
-    #         if f1.startswith('F'):
-    #             f1s.append(float(f1.split('F')[-1]))
-    #     if len(f1s) == 0:
-    #         return []  # 没有合格的模型
-    #     f1_max = np.array(f1s).max()
-    #     for name in model_to_restore:
-    #         f1 = name.split('-')[-1]
-    #         if f1.startswith('F') and float(f1.split('F')[-1]) >= f1_max:
-    #             model_kfold.append(name)
-    #     model_to_restore = model_kfold
+def model_clear(model_save_dir, max_f1):
+    # 清除之前所有F1较小的模型
+    models = []
+    for name in os.listdir(model_save_dir):
+        if name.endswith('.meta'):
+            models.append(name.split('.meta')[0])
+    for model in models:
+        f1 = model.split('-')[-1]
+        if f1.startswith('F') and float(f1.split('F')[-1]) < max_f1:
+            file_path = os.path.join(model_save_dir, model) + '*'
+            os.system('rm -rf %s' % file_path)
+    return
 
-    return model_to_restore
 def make_summary(concept_logits, summary_logits, pred_s1_logits, s2_labels, qc_indexes, hp):
     # 从concept_logits找出与query相关的两行，分别与summary_logits取max，得到soft-候选集得分，再与pred_s1中相关的预测相加求平均
     # input:
@@ -716,7 +721,7 @@ def make_summary(concept_logits, summary_logits, pred_s1_logits, s2_labels, qc_i
     pred_s2_labels = tf.concat(pred_s2_labels, axis=0)
     return pred_s2_logits, pred_s2_labels
 
-def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, model_path):
+def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embeeding, test_mode):
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
@@ -777,13 +782,16 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                                               pred_s2_logits, pred_s2_labels,
                                               reconst_vecs, features, hp)
                 varlist = tf.trainable_variables()  # 全部训练
-                # grads_train = opt_train.compute_gradients(loss, varlist)
-                # thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
-                # grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
-                # tower_grads_train.append(grads_train_cap)
+                grads_train = opt_train.compute_gradients(loss, varlist)
+                thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
+                grads_train_cap = [(tf.clip_by_value(grad, -thresh, thresh), var) for grad, var in grads_train]
+                tower_grads_train.append(grads_train_cap)
                 loss_list.append(loss)
                 loss_ob_list += loss_ob
-        train_op = tf.no_op()
+        grads_t = average_gradients(tower_grads_train)
+        train_op = opt_train.apply_gradients(grads_t, global_step=global_step)
+        if test_mode == 1:
+            train_op = tf.no_op()
 
         # session
         config = tf.ConfigProto(allow_soft_placement=True)
@@ -795,8 +803,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
         # load model
         saver_overall = tf.train.Saver(max_to_keep=100)
         if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + model_path)
-            saver_overall.restore(sess, model_path)
+            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
+            saver_overall.restore(sess, CKPT_MODEL_PATH)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -853,6 +861,8 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
             # save checkpoint &  evaluate
             epoch = step / epoch_step
             if step % epoch_step == 0 or (step + 1) == hp.maxstep:
+                if step == 0 and test_mode == 0:
+                    continue
                 train_scheme = train_scheme_build(data_train, concepts, query_summary, hp)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
@@ -867,8 +877,6 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
                 logging.info('Concept_Loss: %.4f Summary_Loss: %.4f S1_Loss: %.4f S2_Loss: %.4f Diverse_Loss: %.4f' %
                              (sub_loss_array[0],sub_loss_array[1],sub_loss_array[2],sub_loss_array[3],sub_loss_array[4]))
-                if not int(epoch) % hp.eval_epoch == 0:
-                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 concept_lists = []
                 summary_lists = []
@@ -894,79 +902,149 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                         pred_s1_lists.append(preds.reshape((-1, D_C_OUTPUT)))
 
                 # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                p, r, f = evaluation_2stages(concept_lists, summary_lists, pred_s1_lists, query_summary, Tags, test_vids, concepts, queries)
+                p, r, f, pred_outputs = evaluation_2stages(concept_lists, summary_lists, pred_s1_lists, query_summary, Tags, test_vids, concepts, queries)
                 logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                return f
-    return 0
 
+                if test_mode == 1:
+                    return pred_outputs
+    return None
+
+def inspect(pred1_path, pred2_path, vid):
+    # 输入两组不同预测，观察它们的预测分布情况
+
+    def topk_index(scores, k):
+        # 输入一组得分，返回前k个得分的索引
+        scores_indexes = scores.reshape((-1, 1))
+        scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
+        scores_ordered = scores_indexes[scores_indexes[:, 0].argsort()]
+        topk_indexes = scores_ordered[-k:, 1].astype(int)
+        topk_indexes.sort()
+        return topk_indexes
+
+    with open(pred1_path, 'r') as file:
+        pred1 = json.load(file)
+    with open(pred2_path, 'r') as file:
+        pred2 = json.load(file)
+
+    hypo1_count = []
+    hypo2_count = []
+    for query in pred1[vid]:
+        if query in ['c_preds', 's_preds', 'p_preds']:
+            continue
+        shots_pred1 = pred1[vid][query]['shots_pred']
+        shots_pred2 = pred2[vid][query]['shots_pred']
+        shots_gt = pred1[vid][query]['shots_gt']
+        prf1 = pred1[vid][query]['prf']
+        prf2 = pred2[vid][query]['prf']
+
+        vlength = len(pred1[vid]['c_preds'])
+        score1 = (np.array(pred1[vid][query]['pred_c1']) + np.array(pred1[vid][query]['pred_c2'])) / 2
+        score2 = (np.array(pred2[vid][query]['pred_c1']) + np.array(pred2[vid][query]['pred_c2'])) / 2
+        candidate1 = np.array(pred1[vid][query]['candidate'])
+        candidate2 = np.array(pred2[vid][query]['candidate'])
+        k = math.ceil(vlength * 0.02)
+        score1_index = topk_index(score1, k)
+        score2_index = topk_index(score2, k)
+        candidate1_index = topk_index(candidate1, k)
+        candidate2_index = topk_index(candidate2, k)
+
+        pred1_offset = np.mean(np.array(shots_pred1) / vlength * 2)
+        pred2_offset = np.mean(np.array(shots_pred2) / vlength * 2)
+        gt_offset = np.mean(np.array(shots_gt) / vlength * 2)
+        print(query, 'Predictions: ')
+        print(shots_pred1)
+        print(shots_pred2)
+        print('GT: ')
+        print(shots_gt)
+        print('Candidate 1 offset: ', np.mean(candidate1_index / vlength * 2))
+        print('Candidate 2 offset: ', np.mean(candidate2_index / vlength * 2))
+        print('Score 1 offset: ', np.mean(score1_index / vlength * 2))
+        print('Score 2 offset: ', np.mean(score2_index / vlength * 2))
+        print('Pred 1 offset: ', pred1_offset)
+        print('Pred 2 offset: ', pred2_offset)
+        print('GT offset: ', gt_offset)
+        print(prf1)
+        print(prf2)
+
+        if abs(pred1_offset - gt_offset) > abs(pred2_offset - gt_offset) and prf1[-1] < prf2[-1]:
+            hypo1_count.append(1)
+        else:
+            hypo1_count.append(0)
+            if pred1_offset < gt_offset and pred2_offset > gt_offset and prf1[-1] < prf2[-1]:
+                hypo2_count.append(1)
+            else:
+                hypo2_count.append(0)
+    print('\n')
+    print('Pred1: ', pred1['PRF'])
+    print('Pred2: ', pred2['PRF'])
+    print('Hypothesis 1: ', np.array(hypo1_count).mean())
+    print('Hypothesis 2: ', np.array(hypo2_count).mean())
 
 def main(self):
-    Tags = load_Tags(TAGS_PATH)
-    data = load_feature_4fold(FEATURE_BASE, S1_LABEL_PATH, S2_LABEL_PATH, SUMMARY_LABEL_PATH, Tags)
-    queries, query_summary = load_query_summary(QUERY_SUM_BASE)
-    concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
+    # Tags = load_Tags(TAGS_PATH)
+    # data = load_feature_4fold(FEATURE_BASE, S1_LABEL_PATH, S2_LABEL_PATH, SUMMARY_LABEL_PATH, Tags)
+    # queries, query_summary = load_query_summary(QUERY_SUM_BASE)
+    # concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
+    #
+    # kfold = 2
+    # # split data
+    # data_train = {}
+    # data_valid = {}
+    # data_test = {}
+    # data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
+    # data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
+    # data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
+    # data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+    #
+    # # info
+    # logging.info('*' * 20 + 'Settings' + '*' * 20)
+    # logging.info('K-fold: ' + str(kfold))
+    # logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
+    # logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+    # logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
+    # logging.info('WarmUp: ' + str(hp.warmup))
+    # logging.info('Noam LR: ' + str(hp.lr_noam))
+    # logging.info('Num Heads: ' + str(hp.num_heads))
+    # logging.info('Num Blocks: ' + str(hp.num_blocks))
+    # logging.info('Batchsize: ' + str(hp.bc))
+    # logging.info('Max Steps: ' + str(hp.maxstep))
+    # logging.info('Dropout Rate: ' + str(hp.dropout))
+    # logging.info('Sequence Length: ' + str(hp.seq_len))
+    # logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+    # logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
+    # logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
+    #
+    # logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
+    # logging.info('Loss Summary Ratio: ' + str(hp.loss_summary_ratio))
+    # logging.info('Loss S1 Ratio: ' + str(hp.loss_pred_s1_ratio))
+    # logging.info('Loss S2 Ratio: ' + str(hp.loss_pred_s2_ratio))
+    # logging.info('Loss Diverse Ratio: ' + str(hp.loss_diverse_ratio))
+    # logging.info('Pred Candidate Ratio: ' + str(hp.pred_candidate_ratio))
+    # logging.info('Pred Prediction Ratio: ' + str(hp.pred_prediction_ratio))
+    #
+    # logging.info('Global Embedding Ratio: ' + str(hp.global_ratio))
+    # logging.info('Global Embedding Mode: ' + str(hp.global_mode))
+    # logging.info('*' * 50)
+    #
+    # pred_outputs = run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, 1)
+    # with open(r'/data/linkang/model_HL_v4/trans3_12b_k2/pred_S26400.json', 'w') as file:
+    #     json.dump(pred_outputs, file, cls=NpEncoder)
 
-    # evaluate all videos in turn
-    model_scores = {}
-    for kfold in range(4):
-        # split data
-        data_train = {}
-        data_valid = {}
-        data_test = {}
-        data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
-        data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
-        data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
-        data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+    # kfold 2
+    path1 = r'/data/linkang/model_HL_v4/trans3_25s_k2/pred_S18480.json'
+    path2 = r'/data/linkang/model_HL_v4/trans3_25s_k2/pred_S11440.json'
+    inspect(path1, path2, '2')
 
-        # info
-        logging.info('*' * 20 + 'Settings' + '*' * 20)
-        logging.info('K-fold: ' + str(kfold))
-        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
-        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
-        logging.info('WarmUp: ' + str(hp.warmup))
-        logging.info('Noam LR: ' + str(hp.lr_noam))
-        logging.info('Num Heads: ' + str(hp.num_heads))
-        logging.info('Num Blocks: ' + str(hp.num_blocks))
-        logging.info('Batchsize: ' + str(hp.bc))
-        logging.info('Max Steps: ' + str(hp.maxstep))
-        logging.info('Dropout Rate: ' + str(hp.dropout))
-        logging.info('Sequence Length: ' + str(hp.seq_len))
-        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
-        logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
-        logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
+    # # kfold 0
+    # path1 = r'/data/linkang/model_HL_v4/trans3_12b_k0/pred_S17420.json'
+    # path2 = r'/data/linkang/model_HL_v4/trans3_12b_k0/pred_S12060.json'
+    # inspect(path1, path2, '4')
 
-        logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
-        logging.info('Loss Summary Ratio: ' + str(hp.loss_summary_ratio))
-        logging.info('Loss S1 Ratio: ' + str(hp.loss_pred_s1_ratio))
-        logging.info('Loss S2 Ratio: ' + str(hp.loss_pred_s2_ratio))
-        logging.info('Loss Diverse Ratio: ' + str(hp.loss_diverse_ratio))
-        logging.info('Pred Candidate Ratio: ' + str(hp.pred_candidate_ratio))
-        logging.info('Pred Prediction Ratio: ' + str(hp.pred_prediction_ratio))
+    # # kfold 3
+    # path1 = r'/data/linkang/model_HL_v4/trans3_12b_k3/pred_S29000.json'
+    # path2 = r'/data/linkang/model_HL_v4/trans3_12b_k3/pred_S10440.json'
+    # inspect(path1, path2, '3')
 
-        logging.info('Global Embedding Ratio: ' + str(hp.global_ratio))
-        logging.info('Global Embedding Mode: ' + str(hp.global_mode))
-        logging.info('*' * 50)
-
-        # repeat
-        scores = []
-        for i in range(hp.repeat):
-            model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            models_to_restore = model_search(model_save_dir, observe=hp.observe)
-            for i in range(len(models_to_restore)):
-                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
-                model_path = models_to_restore[i]
-                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 model_path)
-                scores.append(f1)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores
-    scores_all = 0
-    for vid in model_scores:
-        scores = model_scores[vid]
-        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
-                     (vid, np.array(scores).mean(), str(scores)))
-        scores_all += np.array(scores).mean()
-    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()
