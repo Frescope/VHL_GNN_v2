@@ -14,8 +14,9 @@ class Path:
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='trans3_12b_16h_25s_50l_10d_l1144_p2575', type=str)
 
-    parser.add_argument('--pred_candidate_ratio', default=0.25, type=float)  # prediction中来自候选集得分的比例
-    parser.add_argument('--pred_prediction_ratio', default=0.75, type=float)  # prediction中来自prediction分支的比例
+    parser.add_argument('--pred_ratio_lo', default=0.00, type=float)
+    parser.add_argument('--pred_ratio_hi', default=1.00, type=float)
+    parser.add_argument('--pred_ratio_step', default=0.05, type=float)
 
 hparams = Path()
 parser = hparams.parser
@@ -160,7 +161,7 @@ def MM_norm(preds):
     # 1D min-max normalization
     return (preds - preds.min()) / (preds.max() - preds.min())
 
-def evaluation(outputs, Tags, query_summary, concepts, ratio):
+def evaluation(outputs, Tags, query_summary, concepts, pred_ratio):
     model_scores = {}
     for vid in outputs:
         f1_scores = []
@@ -194,8 +195,11 @@ def evaluation(outputs, Tags, query_summary, concepts, ratio):
                 # make summary
                 pred_c1 = p_predictions[:, c1_ind]
                 pred_c2 = p_predictions[:, c2_ind]
-                scores = (pred_c1 + pred_c2) / 2 * ratio + \
-                         candidate * (1 - ratio)
+                scores = (pred_c1 + pred_c2) / 2 * pred_ratio + \
+                         candidate * (1 - pred_ratio)
+
+                # front-preferrence
+
                 scores_indexes = scores.reshape((-1, 1))
                 scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
                 shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
@@ -224,7 +228,7 @@ def evaluation(outputs, Tags, query_summary, concepts, ratio):
         logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
                      (vid, np.array(f1_scores).mean(), str(f1_scores)))
         scores_all += np.array(f1_scores).mean()
-    logging.info('Ratio: %.2f, Overall Results: %.3f' % (ratio, scores_all / 4))
+    logging.info('Ratio: %.2f, Overall Results: %.3f' % (pred_ratio, scores_all / 4))
     return scores_all / 4
 
 def main():
@@ -237,12 +241,13 @@ def main():
 
     f1_max = 0
     ratio_max = 0
-    for r in range(0, 101):
-        ratio = r / 100
-        f1_mean = evaluation(outputs, Tags, query_summary, concepts, ratio)
+    pred_ratio = hp.pred_ratio_lo
+    while pred_ratio <= hp.pred_ratio_hi:
+        f1_mean = evaluation(outputs, Tags, query_summary, concepts, pred_ratio)
         if f1_max < f1_mean:
             f1_max = f1_mean
-            ratio_max = ratio
+            ratio_max = pred_ratio
+        pred_ratio += hp.pred_ratio_step
     logging.info('\nRatio: %.2f, Max F1: %.3f' % (ratio_max, f1_max))
 
 
