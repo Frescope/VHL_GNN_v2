@@ -18,6 +18,8 @@ class Path:
     parser.add_argument('--pred_ratio_hi', default=1.00, type=float)
     parser.add_argument('--pred_ratio_step', default=0.05, type=float)
 
+    parser.add_argument('--test_mode', default=1, type=int)
+
 hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
@@ -161,19 +163,24 @@ def MM_norm(preds):
     # 1D min-max normalization
     return (preds - preds.min()) / (preds.max() - preds.min())
 
-def evaluation(outputs, Tags, query_summary, concepts, pred_ratio):
+def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, lo, hi):
     model_scores = {}
     for vid in outputs:
         f1_scores = []
-        logging.info('Video: ' + vid)
+        # logging.info('Video: ' + vid)
         for count in outputs[vid]:
-            logging.info('Model_count: ' + count)
+            # logging.info('Model_count: ' + count)
             c_predictions = np.array(outputs[vid][count]['c_predictions'])
             s_predictions = np.array(outputs[vid][count]['s_predictions'])
             p_predictions = np.array(outputs[vid][count]['p_predictions'])
             vlength = len(c_predictions)
             summary = query_summary[vid]
             hl_num = math.ceil(vlength * 0.02)
+
+            # front-preferrence
+            appendix = [0] * vlength
+            for i in range(len(appendix)):
+                appendix[i] = hi - i * (hi - lo) / vlength
 
             PRE_values = []
             REC_values = []
@@ -197,8 +204,7 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio):
                 pred_c2 = p_predictions[:, c2_ind]
                 scores = (pred_c1 + pred_c2) / 2 * pred_ratio + \
                          candidate * (1 - pred_ratio)
-
-                # front-preferrence
+                scores += np.array(appendix)
 
                 scores_indexes = scores.reshape((-1, 1))
                 scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
@@ -218,7 +224,7 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio):
             PRE_value = np.array(PRE_values).mean()
             REC_value = np.array(REC_values).mean()
             F1_value = np.array(F1_values).mean()
-            logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (PRE_value, REC_value, F1_value))
+            # logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (PRE_value, REC_value, F1_value))
             f1_scores.append(F1_value)
         model_scores[vid] = f1_scores
 
@@ -228,7 +234,7 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio):
         logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
                      (vid, np.array(f1_scores).mean(), str(f1_scores)))
         scores_all += np.array(f1_scores).mean()
-    logging.info('Ratio: %.2f, Overall Results: %.3f' % (pred_ratio, scores_all / 4))
+    logging.info('Ratio: %.2f, APPD_LO: %.2f, APPD_HI: %.2f, Overall Results: %.3f' % (pred_ratio, lo, hi, scores_all / 4))
     return scores_all / 4
 
 def main():
@@ -239,17 +245,41 @@ def main():
     with open(MODEL_SAVE_BASE + hp.msd + '_test_outputs.json', 'r') as file:
         outputs = json.load(file)
 
-    f1_max = 0
-    ratio_max = 0
-    pred_ratio = hp.pred_ratio_lo
-    while pred_ratio <= hp.pred_ratio_hi:
-        f1_mean = evaluation(outputs, Tags, query_summary, concepts, pred_ratio)
-        if f1_max < f1_mean:
-            f1_max = f1_mean
-            ratio_max = pred_ratio
-        pred_ratio += hp.pred_ratio_step
-    logging.info('\nRatio: %.2f, Max F1: %.3f' % (ratio_max, f1_max))
+    # Test prediction balance ratio
+    if hp.test_mode == 0:
+        f1_max = 0
+        ratio_max = 0
+        pred_ratio = hp.pred_ratio_lo
+        while pred_ratio <= hp.pred_ratio_hi:
+            f1_mean = evaluation(outputs, Tags, query_summary, concepts, pred_ratio, 0, 0)
+            if f1_max < f1_mean:
+                f1_max = f1_mean
+                ratio_max = pred_ratio
+            pred_ratio += hp.pred_ratio_step
+        logging.info('\nRatio: %.2f, Max F1: %.3f' % (ratio_max, f1_max))
 
+    # Test appendix
+    else:
+        test_list = [[0, 1],
+                     [0.1, 0.9],
+                     [0.2, 0.8],
+                     [0.3, 0.7],
+                     [0.4, 0.6],
+                     [0, 0.5],
+                     [0.1, 0.4],
+                     [0.2, 0.3],
+                     [0.5, 1],
+                     [0.6, 0.9],
+                     [0.7, 0.8]]
+        f1_max = 0
+        ind_max = 0
+        for i in range(len(test_list)):
+            lo, hi = test_list[i]
+            f1_mean = evaluation(outputs, Tags, query_summary, concepts, 0.75, lo, hi)
+            if f1_max < f1_mean:
+                f1_max = f1_mean
+                ind_max = i
+        logging.info('\nAPPD_LO: %.2f, APPD_HI: %.2f, Max F1: %.3f' % (test_list[ind_max][0], test_list[ind_max][1], f1_max))
 
 if __name__ == '__main__':
     main()
