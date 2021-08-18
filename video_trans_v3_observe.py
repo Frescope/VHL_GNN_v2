@@ -114,7 +114,7 @@ elif hp.server == 1:
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
-    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/trans3_12b_k2/S26400-E300-L2.016940-F0.484'
+    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/trans3_12b_k2/S11440-E130-L1.649859-F0.497'
 else:
     # path for JD A100 Server, make sure that VHL_GNN_V2 and utc folder are under the same directory
     FEATURE_BASE = r'../utc/features/'
@@ -981,59 +981,59 @@ def inspect(pred1_path, pred2_path, vid):
     print('Hypothesis 2: ', np.array(hypo2_count).mean())
 
 def main(self):
-    # Tags = load_Tags(TAGS_PATH)
-    # data = load_feature_4fold(FEATURE_BASE, S1_LABEL_PATH, S2_LABEL_PATH, SUMMARY_LABEL_PATH, Tags)
-    # queries, query_summary = load_query_summary(QUERY_SUM_BASE)
-    # concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
-    #
-    # kfold = 2
-    # # split data
-    # data_train = {}
-    # data_valid = {}
-    # data_test = {}
-    # data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
-    # data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
-    # data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
-    # data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
-    #
-    # # info
-    # logging.info('*' * 20 + 'Settings' + '*' * 20)
-    # logging.info('K-fold: ' + str(kfold))
-    # logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-    # logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
-    # logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
-    # logging.info('WarmUp: ' + str(hp.warmup))
-    # logging.info('Noam LR: ' + str(hp.lr_noam))
-    # logging.info('Num Heads: ' + str(hp.num_heads))
-    # logging.info('Num Blocks: ' + str(hp.num_blocks))
-    # logging.info('Batchsize: ' + str(hp.bc))
-    # logging.info('Max Steps: ' + str(hp.maxstep))
-    # logging.info('Dropout Rate: ' + str(hp.dropout))
-    # logging.info('Sequence Length: ' + str(hp.seq_len))
-    # logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
-    # logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
-    # logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
-    #
-    # logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
-    # logging.info('Loss Summary Ratio: ' + str(hp.loss_summary_ratio))
-    # logging.info('Loss S1 Ratio: ' + str(hp.loss_pred_s1_ratio))
-    # logging.info('Loss S2 Ratio: ' + str(hp.loss_pred_s2_ratio))
-    # logging.info('Loss Diverse Ratio: ' + str(hp.loss_diverse_ratio))
-    # logging.info('Pred Candidate Ratio: ' + str(hp.pred_candidate_ratio))
-    # logging.info('Pred Prediction Ratio: ' + str(hp.pred_prediction_ratio))
-    #
-    # logging.info('Global Embedding Ratio: ' + str(hp.global_ratio))
-    # logging.info('Global Embedding Mode: ' + str(hp.global_mode))
-    # logging.info('*' * 50)
-    #
-    # pred_outputs = run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, 1)
-    # with open(r'/data/linkang/model_HL_v4/trans3_12b_k2/pred_S26400.json', 'w') as file:
-    #     json.dump(pred_outputs, file, cls=NpEncoder)
+    Tags = load_Tags(TAGS_PATH)
+    data = load_feature_4fold(FEATURE_BASE, S1_LABEL_PATH, S2_LABEL_PATH, SUMMARY_LABEL_PATH, Tags)
+    queries, query_summary = load_query_summary(QUERY_SUM_BASE)
+    concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
 
-    # kfold 2
-    path1 = r'/data/linkang/model_HL_v4/trans3_25s_k2/pred_S18480.json'
-    path2 = r'/data/linkang/model_HL_v4/trans3_25s_k2/pred_S11440.json'
-    inspect(path1, path2, '2')
+    kfold = 2
+    # split data
+    data_train = {}
+    data_valid = {}
+    data_test = {}
+    data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
+    data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
+    data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
+    data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+
+    # info
+    logging.info('*' * 20 + 'Settings' + '*' * 20)
+    logging.info('K-fold: ' + str(kfold))
+    logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
+    logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+    logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
+    logging.info('WarmUp: ' + str(hp.warmup))
+    logging.info('Noam LR: ' + str(hp.lr_noam))
+    logging.info('Num Heads: ' + str(hp.num_heads))
+    logging.info('Num Blocks: ' + str(hp.num_blocks))
+    logging.info('Batchsize: ' + str(hp.bc))
+    logging.info('Max Steps: ' + str(hp.maxstep))
+    logging.info('Dropout Rate: ' + str(hp.dropout))
+    logging.info('Sequence Length: ' + str(hp.seq_len))
+    logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+    logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
+    logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
+
+    logging.info('Loss Concept Ratio: ' + str(hp.loss_concept_ratio))
+    logging.info('Loss Summary Ratio: ' + str(hp.loss_summary_ratio))
+    logging.info('Loss S1 Ratio: ' + str(hp.loss_pred_s1_ratio))
+    logging.info('Loss S2 Ratio: ' + str(hp.loss_pred_s2_ratio))
+    logging.info('Loss Diverse Ratio: ' + str(hp.loss_diverse_ratio))
+    logging.info('Pred Candidate Ratio: ' + str(hp.pred_candidate_ratio))
+    logging.info('Pred Prediction Ratio: ' + str(hp.pred_prediction_ratio))
+
+    logging.info('Global Embedding Ratio: ' + str(hp.global_ratio))
+    logging.info('Global Embedding Mode: ' + str(hp.global_mode))
+    logging.info('*' * 50)
+
+    pred_outputs = run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, 1)
+    with open(r'/data/linkang/model_HL_v4/trans3_12b_k2/pred_S26400.json', 'w') as file:
+        json.dump(pred_outputs, file, cls=NpEncoder)
+
+    # # kfold 2
+    # path1 = r'/data/linkang/model_HL_v4/trans3_25s_k2/pred_S18480.json'
+    # path2 = r'/data/linkang/model_HL_v4/trans3_25s_k2/pred_S11440.json'
+    # inspect(path1, path2, '2')
 
     # # kfold 0
     # path1 = r'/data/linkang/model_HL_v4/trans3_12b_k0/pred_S17420.json'
