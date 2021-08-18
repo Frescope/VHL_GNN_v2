@@ -24,6 +24,8 @@ import pickle
 from transformer_v3 import transformer
 import networkx as nx
 
+np.random.seed(1)
+
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
