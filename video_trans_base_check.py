@@ -611,8 +611,6 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                if step < hp.protection or not int(epoch) % hp.eval_epoch == 0:
-                    continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_s1_lists = []
                 for test_step in range(max_test_step):
