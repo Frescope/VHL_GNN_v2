@@ -12,13 +12,13 @@ import networkx as nx
 class Path:
     parser = argparse.ArgumentParser()
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--msd', default='trans3_12b_16h_25s_50l_10d_l1144_p2575', type=str)
+    parser.add_argument('--msd', default='trans3_6b_8h_25s_10l_10d_l1144_p2575', type=str)
 
     parser.add_argument('--pred_ratio_lo', default=0.00, type=float)
     parser.add_argument('--pred_ratio_hi', default=1.00, type=float)
     parser.add_argument('--pred_ratio_step', default=0.05, type=float)
 
-    parser.add_argument('--test_mode', default=1, type=int)
+    parser.add_argument('--test_mode', default=0, type=int)
 
 hparams = Path()
 parser = hparams.parser
