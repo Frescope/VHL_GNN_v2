@@ -236,7 +236,8 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, appendix_list
         logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
                      (vid, np.array(f1_scores).mean(), str(f1_scores)))
         scores_all += np.array(f1_scores).mean()
-    logging.info('Ratio: %.2f, APPD_LO: %.2f, APPD_HI: %.2f, Overall Results: %.3f' % (pred_ratio, lo, hi, scores_all / 4))
+    logging.info('Ratio: %.2f, Overall Results: %.3f' % (pred_ratio, scores_all / 4))
+    logging.info(str(appendix_list))
     return scores_all / 4
 
 def main():
@@ -282,7 +283,8 @@ def main():
             if f1_max < f1_mean:
                 f1_max = f1_mean
                 ind_max = i
-        logging.info('\nAPPD_LO: %.2f, APPD_HI: %.2f, Max F1: %.3f' % (test_list[ind_max][0], test_list[ind_max][1], f1_max))
+        logging.info('\nMax F1: %.3f' % f1_max)
+        logging.info(str(test_list[ind_max]))
 
 if __name__ == '__main__':
     main()
