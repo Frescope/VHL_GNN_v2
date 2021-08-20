@@ -18,7 +18,7 @@ class Path:
     parser.add_argument('--pred_ratio_hi', default=1.00, type=float)
     parser.add_argument('--pred_ratio_step', default=0.05, type=float)
 
-    parser.add_argument('--test_mode', default=0, type=int)
+    parser.add_argument('--test_mode', default=1, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -163,7 +163,7 @@ def MM_norm(preds):
     # 1D min-max normalization
     return (preds - preds.min()) / (preds.max() - preds.min())
 
-def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, lo, hi):
+def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, appendix_list):
     model_scores = {}
     for vid in outputs:
         f1_scores = []
@@ -178,9 +178,11 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, lo, hi):
             hl_num = math.ceil(vlength * 0.02)
 
             # front-preferrence
-            appendix = [0] * vlength
-            for i in range(len(appendix)):
-                appendix[i] = hi - i * (hi - lo) / vlength
+            seg_len = math.ceil(vlength / len(appendix_list))
+            appendix = []
+            for num in appendix_list:
+                appendix += [num] * seg_len
+            appendix = np.array(appendix[:vlength])
 
             PRE_values = []
             REC_values = []
@@ -204,7 +206,7 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, lo, hi):
                 pred_c2 = p_predictions[:, c2_ind]
                 scores = (pred_c1 + pred_c2) / 2 * pred_ratio + \
                          candidate * (1 - pred_ratio)
-                scores += np.array(appendix)
+                scores += appendix
 
                 scores_indexes = scores.reshape((-1, 1))
                 scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
@@ -260,22 +262,23 @@ def main():
 
     # Test appendix
     else:
-        test_list = [[0, 1],
-                     [0.1, 0.9],
-                     [0.2, 0.8],
-                     [0.3, 0.7],
-                     [0.4, 0.6],
-                     [0, 0.5],
-                     [0.1, 0.4],
-                     [0.2, 0.3],
-                     [0.5, 1],
-                     [0.6, 0.9],
-                     [0.7, 0.8]]
+        test_list = [[0.1, 0],
+                     [0.2, 0],
+                     [0.3, 0],
+                     [0.4, 0],
+                     [0.5, 0],
+                     [0.2, 0.1, 0],
+                     [0.3, 0.15, 0],
+                     [0.4, 0.2, 0],
+                     [0.4,0.3,0.2,0.1,0],
+                     [0.5,0.4,0.3,0.2,0.1,0],
+                     [0.6,0.5,0.4,0.3,0.2,0.1,0],
+                     [0.7,0.6,0.5,0.4,0.3,0.2,0.1,0]]
+
         f1_max = 0
         ind_max = 0
         for i in range(len(test_list)):
-            lo, hi = test_list[i]
-            f1_mean = evaluation(outputs, Tags, query_summary, concepts, 0.75, lo, hi)
+            f1_mean = evaluation(outputs, Tags, query_summary, concepts, 0.75, test_list[i])
             if f1_max < f1_mean:
                 f1_max = f1_mean
                 ind_max = i
