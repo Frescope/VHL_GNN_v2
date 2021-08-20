@@ -18,7 +18,7 @@ class Path:
     parser.add_argument('--pred_ratio_hi', default=1.00, type=float)
     parser.add_argument('--pred_ratio_step', default=0.05, type=float)
 
-    parser.add_argument('--test_mode', default=1, type=int)
+    parser.add_argument('--test_mode', default=2, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -240,6 +240,100 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, appendix_list
     logging.info(str(appendix_list))
     return scores_all / 4
 
+def evaluation_split(outputs, Tags, query_summary, concepts):
+    def shot_predicting(scores):
+        scores_indexes = np.hstack((scores, np.array(range(len(scores))).reshape((-1, 1))))
+        shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
+        shots_pred = shots_pred[-hl_num:, 1].astype(int)
+        shots_pred.sort()
+        return shots_pred
+
+    def f1_calculating(shots_pred, shots_gt):
+        sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+        weight = shot_matching(sim_mat)
+        precision = weight / len(shots_pred)
+        recall = weight / len(shots_gt)
+        f1 = 2 * precision * recall / (precision + recall)
+        return f1
+
+    model_scores = {}
+    for vid in outputs:
+        dense_concept_f1s = []
+        sum_generic_f1s = []
+        query_preds_f1s = []
+        # logging.info('Video: ' + vid)
+        for count in outputs[vid]:
+            # logging.info('Model_count: ' + count)
+            c_predictions = np.array(outputs[vid][count]['c_predictions'])
+            s_predictions = np.array(outputs[vid][count]['s_predictions'])
+            p_predictions = np.array(outputs[vid][count]['p_predictions'])
+            vlength = len(c_predictions)
+            summary = query_summary[vid]
+            hl_num = math.ceil(vlength * 0.02)
+
+            dense_concept_f1 = []
+            sum_generic_f1 = []
+            query_preds_f1 = []
+            for query in summary:
+                shots_gt = summary[query]
+                # q_ind = queries[vid].index(query)
+                c1, c2 = query.split('_')
+                c1_ind = concepts.index(c1)
+                c2_ind = concepts.index(c2)
+
+                # compute soft-candidate scores
+                concept_c1 = MM_norm(c_predictions[:, c1_ind]).reshape((-1, 1))
+                concept_c2 = MM_norm(c_predictions[:, c2_ind]).reshape((-1, 1))
+                dense_concept = (concept_c1 + concept_c2) / 2
+                sum_generic = MM_norm(s_predictions).reshape((-1, 1))
+
+                # make summary
+                pred_c1 = p_predictions[:, c1_ind]
+                pred_c2 = p_predictions[:, c2_ind]
+                query_preds = (pred_c1 + pred_c2) / 2
+                query_preds = query_preds.reshape((-1, 1))
+
+                dense_concept_shots = shot_predicting(dense_concept)
+                sum_generic_shots = shot_predicting(sum_generic)
+                query_preds_shots = shot_predicting(query_preds)
+
+                dense_concept_f1.append(f1_calculating(dense_concept_shots, shots_gt))
+                sum_generic_f1.append(f1_calculating(sum_generic_shots, shots_gt))
+                query_preds_f1.append(f1_calculating(query_preds_shots, shots_gt))
+
+            dense_concept_f1 = np.array(dense_concept_f1).mean()
+            sum_generic_f1 = np.array(sum_generic_f1).mean()
+            query_preds_f1 = np.array(query_preds_f1).mean()
+            logging.info('dense_concept: %.3f, summary: %.3f, query_summary: %.3f' %
+                         (dense_concept_f1, sum_generic_f1, query_preds_f1))
+            dense_concept_f1s.append(dense_concept_f1)
+            sum_generic_f1s.append(sum_generic_f1)
+            query_preds_f1s.append(query_preds_f1)
+        model_scores[vid]['dense_concept'] = dense_concept_f1s
+        model_scores[vid]['summary'] = sum_generic_f1s
+        model_scores[vid]['query_preds'] = query_preds_f1s
+
+    dense_concept_f1_all = 0
+    sum_generic_f1_all = 0
+    query_preds_f1_all = 0
+    for vid in model_scores:
+        dense_concept_scores = model_scores[vid]['dense_concept']
+        sum_generic_scores = model_scores[vid]['summary']
+        query_preds_scores = model_scores[vid]['query_preds']
+        logging.info('Vid: %s' % vid)
+        logging.info('Dense Concept: Mean: %.3f, Scores: %s' %
+                     (np.array(dense_concept_scores).mean(), str(dense_concept_scores)))
+        logging.info('Summary: Mean: %.3f, Scores: %s' %
+                     (np.array(sum_generic_scores).mean(), str(sum_generic_scores)))
+        logging.info('Query Prediction: Mean: %.3f, Scores: %s' %
+                     (np.array(query_preds_scores).mean(), str(query_preds_scores)))
+        dense_concept_f1_all += np.array(dense_concept_scores).mean()
+        sum_generic_f1_all += np.array(sum_generic_scores).mean()
+        query_preds_f1_all += np.array(query_preds_scores).mean()
+    logging.info('Dense Concept Overall Results: %.3f' % (dense_concept_f1_all / 4))
+    logging.info('Summary Overall Results: %.3f' % (sum_generic_f1_all / 4))
+    logging.info('Query Prediction Overall Results: %.3f' % (query_preds_f1_all / 4))
+
 def main():
     Tags = load_Tags(TAGS_PATH)
     queries, query_summary = load_query_summary(QUERY_SUM_BASE)
@@ -262,7 +356,7 @@ def main():
         logging.info('\nRatio: %.2f, Max F1: %.3f' % (ratio_max, f1_max))
 
     # Test appendix
-    else:
+    elif hp.test_mode == 1:
         test_list = [[0.1, 0],
                      [0.2, 0],
                      [0.3, 0],
@@ -285,6 +379,10 @@ def main():
                 ind_max = i
         logging.info('\nMax F1: %.3f' % f1_max)
         logging.info(str(test_list[ind_max]))
+
+    # Split
+    else:
+        evaluation_split(outputs, Tags, query_summary, concepts)
 
 if __name__ == '__main__':
     main()
