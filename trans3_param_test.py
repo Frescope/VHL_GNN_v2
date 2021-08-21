@@ -309,6 +309,7 @@ def evaluation_split(outputs, Tags, query_summary, concepts):
             dense_concept_f1s.append(dense_concept_f1)
             sum_generic_f1s.append(sum_generic_f1)
             query_preds_f1s.append(query_preds_f1)
+        model_scores[vid] = {}
         model_scores[vid]['dense_concept'] = dense_concept_f1s
         model_scores[vid]['summary'] = sum_generic_f1s
         model_scores[vid]['query_preds'] = query_preds_f1s
