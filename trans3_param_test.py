@@ -18,7 +18,7 @@ class Path:
     parser.add_argument('--pred_ratio_hi', default=1.00, type=float)
     parser.add_argument('--pred_ratio_step', default=0.05, type=float)
 
-    parser.add_argument('--test_mode', default=2, type=int)
+    parser.add_argument('--test_mode', default=0, type=int)
 
 hparams = Path()
 parser = hparams.parser
@@ -161,7 +161,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
 
 def MM_norm(preds):
     # 1D min-max normalization
-    return (preds - preds.min()) / (preds.max() - preds.min())
+    return (preds - preds.min()) / (preds.max() - preds.min()) + 1e-8
 
 def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, appendix_list):
     model_scores = {}
@@ -195,16 +195,16 @@ def evaluation(outputs, Tags, query_summary, concepts, pred_ratio, appendix_list
                 c2_ind = concepts.index(c2)
 
                 # compute soft-candidate scores
-                concept_c1 = MM_norm(c_predictions[:, c1_ind]).reshape((-1, 1))
-                concept_c2 = MM_norm(c_predictions[:, c2_ind]).reshape((-1, 1))
-                sum_generic = MM_norm(s_predictions).reshape((-1, 1))
+                concept_c1 = np.log(MM_norm(c_predictions[:, c1_ind]).reshape((-1, 1)))
+                concept_c2 = np.log(MM_norm(c_predictions[:, c2_ind]).reshape((-1, 1)))
+                sum_generic = np.log(MM_norm(s_predictions).reshape((-1, 1)))
                 candidate = np.hstack((concept_c1, concept_c2, sum_generic))
                 candidate = np.max(candidate, axis=1)
 
                 # make summary
                 pred_c1 = p_predictions[:, c1_ind]
                 pred_c2 = p_predictions[:, c2_ind]
-                scores = (pred_c1 + pred_c2) / 2 * pred_ratio + \
+                scores = np.log((pred_c1 + pred_c2) / 2) * pred_ratio + \
                          candidate * (1 - pred_ratio)
                 scores += appendix
 
@@ -309,6 +309,8 @@ def evaluation_split(outputs, Tags, query_summary, concepts):
             dense_concept_f1s.append(dense_concept_f1)
             sum_generic_f1s.append(sum_generic_f1)
             query_preds_f1s.append(query_preds_f1)
+
+
         model_scores[vid] = {}
         model_scores[vid]['dense_concept'] = dense_concept_f1s
         model_scores[vid]['summary'] = sum_generic_f1s
@@ -349,7 +351,7 @@ def main():
         ratio_max = 0
         pred_ratio = hp.pred_ratio_lo
         while pred_ratio <= hp.pred_ratio_hi:
-            f1_mean = evaluation(outputs, Tags, query_summary, concepts, pred_ratio, 0, 0)
+            f1_mean = evaluation(outputs, Tags, query_summary, concepts, pred_ratio, [0,0])
             if f1_max < f1_mean:
                 f1_max = f1_mean
                 ratio_max = pred_ratio
