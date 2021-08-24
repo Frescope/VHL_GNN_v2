@@ -23,7 +23,7 @@ import networkx as nx
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='1',type=str)
+    parser.add_argument('--gpu', default='8',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -36,7 +36,7 @@ class Path:
     parser.add_argument('--maxstep', default=100000, type=int)
     parser.add_argument('--repeat', default=3, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
     parser.add_argument('--protection', default=1000, type=int)  # 不检查步数太小的模型
@@ -51,11 +51,11 @@ class Path:
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=5, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=75, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # memory参数
-    parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
+    parser.add_argument('--memory_num', default=60, type=int)  # memory节点数量
     parser.add_argument('--memory_dimension', default=1024, type=int)  # memory节点的维度
     parser.add_argument('--memory_init', default='random', type=str)  # random, text
 
@@ -64,11 +64,12 @@ parser = hparams.parser
 hp = parser.parse_args()
 
 if hp.server != 1:
-    tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
-else:
-    tf.logging.set_verbosity(tf.logging.ERROR)
+    # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+    os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
+# else:
+#     tf.logging.set_verbosity(tf.logging.ERROR)
+#     os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
 
-os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
 
 # global paras
 D_FEATURE = 1024  # for I3D
