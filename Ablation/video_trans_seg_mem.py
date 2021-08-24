@@ -63,7 +63,7 @@ hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
 
-if hp.server != 1:
+if hp.server != 0:  # 对JD server不能指定gpu
     # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
     os.environ["CUDA_VISIBLE_DEVICES"] = hp.gpu
 # else:
