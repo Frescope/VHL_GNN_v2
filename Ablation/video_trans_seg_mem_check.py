@@ -23,7 +23,7 @@ import networkx as nx
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='1',type=str)
+    parser.add_argument('--gpu', default='5',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -36,7 +36,7 @@ class Path:
     parser.add_argument('--maxstep', default=100000, type=int)
     parser.add_argument('--repeat', default=3, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='', type=str)
     parser.add_argument('--protection', default=1000, type=int)  # 不检查步数太小的模型
@@ -51,14 +51,19 @@ class Path:
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=5, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=75, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # memory参数
-    parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
+    parser.add_argument('--memory_num', default=60, type=int)  # memory节点数量
     parser.add_argument('--memory_dimension', default=1024, type=int)  # memory节点的维度
     parser.add_argument('--memory_init', default='random', type=str)  # random, text
 
+    # loss参数
+    parser.add_argument('--loss_s1_ratio', default=0.80, type=float)  # pred损失比例
+    parser.add_argument('--mem_div', default=0.10, type=float)  # memory_diversity损失比例
+    parser.add_argument('--shots_div', default=0.10, type=float)  # shots_diversity损失比例
+    parser.add_argument('--shots_div_ratio', default=0.20, type=float)  # shots_diversity中挑选出的片段比例
 hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
@@ -405,9 +410,29 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss_base(pred_s1_logits, pred_s1_labels, hp):
+def tower_loss_diverse(pred_s1_logits, pred_s1_labels, shots_output, memroy_output, hp):
+    # shots_output: bc*seq_len*D
+    # memory_output: bc*memory_num*D
     # pred_s1_logits & pred_s1_labels: bc*seq_len*48
     # 对s1_loss，计算各个shot在s1中所有concept相关预测上的NCE-Loss的均值
+    # 计算shots与memory的diversity-loss，s1_loss加权求和
+
+    def diversity_loss(Vecs):
+        # 计算一组输入节点特征之间的多样性损失
+        vecs_len = Vecs.get_shape().as_list()[1]
+        Vecs_T = tf.transpose(Vecs, perm=(0, 2, 1))  # bc*D*vecslen
+        Products = tf.matmul(Vecs, Vecs_T)  # 点积，bc*vecslen*vecslen
+
+        Magnitude = tf.sqrt(tf.reduce_sum(tf.square(Vecs), axis=2, keep_dims=True))  # 求模，bc*vecslen*1
+        Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*vecslen
+        Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*vecslen*vecslen
+
+        loss = tf.reduce_sum(Products / (Mag_product + 1e-8), [1, 2])
+        obs1 = Products / (Mag_product + 1e-8)
+        loss = loss - vecs_len * 1 / (1 + 1e-8)  # 减去每个序列中节点自身相乘得到的对角线上的1
+        obs2 = loss
+        loss = tf.reduce_mean(loss / (vecs_len - 1) / vecs_len)
+        return loss, [obs1, obs2]
 
     # for s1，与分解到concept的query-summary label
     pred_s1_logits = tf.transpose(pred_s1_logits, perm=(0, 2, 1))  # bc*48*seq_len
@@ -422,7 +447,30 @@ def tower_loss_base(pred_s1_logits, pred_s1_labels, hp):
     s1_nce_loss = -tf.log((s1_nce_pos / s1_nce_all) + 1e-5)
     s1_loss = tf.reduce_mean(s1_nce_loss)
 
-    return s1_loss
+    # for shots diversity
+    if hp.shots_div >= 0.01:
+        top_50 = tf.nn.top_k(pred_s1_logits, int(hp.seq_len * hp.shots_div_ratio))
+        top_indices = top_50.indices  # 没行（序列）前50%的索引
+        KeyVecs = []  # 得分较高的shot对应的重建向量
+        for i in range(top_indices.get_shape().as_list()[0]):  # i为展开后的pred第一维坐标
+            seq_pos = int(i / CONCEPT_NUM)  # 对应的输出特征中的序列位置
+            KeyVecs.append(tf.gather(shots_output[seq_pos:seq_pos+1], top_indices[i], axis=1))
+        KeyVecs = tf.concat(KeyVecs, axis=0)
+        shots_diverse_loss = diversity_loss(KeyVecs)
+    else:
+        shots_diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+
+    # for memory diversity
+    if hp.mem_div >= 0.05:
+        Vecs = memroy_output  # 全部节点都应当不相似
+        mem_diverse_loss = diversity_loss(Vecs)
+    else:
+        mem_diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+
+    loss = s1_loss * hp.loss_s1_ratio  + \
+           shots_diverse_loss * hp.shots_div + \
+           mem_diverse_loss * hp.mem_div
+    return loss, [s1_loss, shots_diverse_loss, mem_diverse_loss]
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -609,12 +657,12 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                 pred_s1_labels = pred_s1_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
 
                 # 整合concept与summary的预测，形成最终预测
-                pred_s1_logits = transformer(segment_embs, features, memory_nodes,
+                pred_s1_logits, shots_output, memory_output = transformer(segment_embs, features, memory_nodes,
                                              segment_poses, positions, scores_src, dropout_holder, training_holder, hp, D_C_OUTPUT)
                 pred_s1_logits_list.append(pred_s1_logits)
 
                   # 训练时每个序列只针对一个query预测summary
-                loss = tower_loss_base(pred_s1_logits, pred_s1_labels, hp)
+                loss, loss_ob = tower_loss_diverse(pred_s1_logits, pred_s1_labels, shots_output, memory_output, hp)
                 varlist = tf.trainable_variables()  # 全部训练
                 # grads_train = opt_train.compute_gradients(loss, varlist)
                 # thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸

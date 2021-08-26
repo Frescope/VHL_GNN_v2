@@ -188,14 +188,15 @@ def transformer(segment_embs, features, memory_embs,
         src_masks = tf.math.equal(scores_src, 0)  # 标记输入的节点序列内哪些是padding部分
 
         # encoding & decoding
-        memory = encoder(input_nodes, src_masks, drop_out, training, hp)
-        decoder_output = memory[: , 0 : hp.seq_len, :]
+        enc_output = encoder(input_nodes, src_masks, drop_out, training, hp)
+        shots_output= enc_output[: , 0 : hp.seq_len, :]
+        memory_output = enc_output[:, -hp.memory_num : ,]
 
-        prediction_branch = tf.layers.dense(decoder_output, 1024, use_bias=True, activation=tf.nn.relu)
+        prediction_branch = tf.layers.dense(shots_output, 1024, use_bias=True, activation=tf.nn.relu)
         prediction_branch = tf.layers.dense(prediction_branch, 512, use_bias=True, activation=tf.nn.relu)
         prediciton_branch = tf.layers.dense(prediction_branch, 256, use_bias=True, activation=tf.nn.relu)
         prediction_logits = tf.layers.dense(prediciton_branch, concept_num, use_bias=True, activation=None)
         # prediciton_logits = tf.nn.softmax(prediction_logits, axis=1)
         prediction_logits = tf.sigmoid(prediction_logits)
 
-        return prediction_logits
+        return prediction_logits, shots_output, memory_output
