@@ -61,8 +61,8 @@ class Path:
 
     # loss参数
     parser.add_argument('--loss_s1_ratio', default=0.80, type=float)  # pred损失比例
-    parser.add_argument('--mem_div', default=0.10, type=float)  # memory_diversity损失比例
-    parser.add_argument('--shots_div', default=0.10, type=float)  # shots_diversity损失比例
+    parser.add_argument('--mem_div', default=0.00, type=float)  # memory_diversity损失比例
+    parser.add_argument('--shots_div', default=0.00, type=float)  # shots_diversity损失比例
     parser.add_argument('--shots_div_ratio', default=0.20, type=float)  # shots_diversity中挑选出的片段比例
 
 hparams = Path()

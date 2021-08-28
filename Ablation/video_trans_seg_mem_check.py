@@ -62,8 +62,8 @@ class Path:
     # loss参数
     parser.add_argument('--loss_s1_ratio', default=0.80, type=float)  # pred损失比例
     parser.add_argument('--mem_div', default=0.10, type=float)  # memory_diversity损失比例
-    parser.add_argument('--shots_div', default=0.10, type=float)  # shots_diversity损失比例
-    parser.add_argument('--shots_div_ratio', default=0.20, type=float)  # shots_diversity中挑选出的片段比例
+    parser.add_argument('--shots_div', default=0.1-0, type=float)  # shots_diversity损失比例
+    parser.add_argument('--shots_div_ratio', default=0.10, type=float)  # shots_diversity中挑选出的片段比例
 hparams = Path()
 parser = hparams.parser
 hp = parser.parse_args()
@@ -456,14 +456,14 @@ def tower_loss_diverse(pred_s1_logits, pred_s1_labels, shots_output, memroy_outp
             seq_pos = int(i / CONCEPT_NUM)  # 对应的输出特征中的序列位置
             KeyVecs.append(tf.gather(shots_output[seq_pos:seq_pos+1], top_indices[i], axis=1))
         KeyVecs = tf.concat(KeyVecs, axis=0)
-        shots_diverse_loss = diversity_loss(KeyVecs)
+        shots_diverse_loss, _ = diversity_loss(KeyVecs)
     else:
         shots_diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
     # for memory diversity
     if hp.mem_div >= 0.05:
         Vecs = memroy_output  # 全部节点都应当不相似
-        mem_diverse_loss = diversity_loss(Vecs)
+        mem_diverse_loss, _ = diversity_loss(Vecs)
     else:
         mem_diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
