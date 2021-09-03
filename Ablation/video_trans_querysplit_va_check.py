@@ -50,7 +50,7 @@ class Path:
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=75, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=10, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # memory参数
@@ -532,10 +532,13 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts, query_sp
         p_logits = np.vstack((p_logits, pred_s1_lists[i]))
 
     pos = 0
-    PRE_values = []
-    REC_values = []
-    F1_values = []
+    PRE_values_all = []
+    REC_values_all = []
+    F1_values_all = []
     for i in range(len(test_vids)):
+        PRE_values = []
+        REC_values = []
+        F1_values = []
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
         hl_num = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
@@ -570,10 +573,14 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts, query_sp
             PRE_values.append(precision)
             REC_values.append(recall)
             F1_values.append(f1)
-    PRE_values = np.array(PRE_values)
-    REC_values = np.array(REC_values)
-    F1_values = np.array(F1_values)
-    return np.mean(PRE_values), np.mean(REC_values), np.mean(F1_values)
+        PRE_values = np.array(PRE_values).mean()
+        REC_values = np.array(REC_values).mean()
+        F1_values = np.array(F1_values).mean()
+        PRE_values_all.append(PRE_values)
+        REC_values_all.append(REC_values)
+        F1_values_all.append(F1_values)
+
+    return PRE_values_all, REC_values_all, F1_values_all
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
@@ -763,9 +770,12 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
                         pred_s1_lists.append(preds.reshape((-1, D_C_OUTPUT)))
 
                 # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                p, r, f = evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts, query_split, test_mode)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
-                return f
+                ps, rs, fs = evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts, query_split, test_mode)
+                logging.info('Pre for all videos: ' + str(ps))
+                logging.info('Rec for all videos: ' + str(rs))
+                logging.info('F1  for all videos: ' + str(fs))
+                # logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
+                return np.array(fs).mean()
     return 0
 
 def main(self):
