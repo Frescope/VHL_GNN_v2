@@ -1,3 +1,4 @@
+# 基于query-split，使用全部视频的训练query训练，使用全部视频的测试query测试
 # 基于seg_mem，在训练、验证与测试时均使用部分query
 
 import os
@@ -21,7 +22,7 @@ import networkx as nx
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='1',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -776,56 +777,42 @@ def main(self):
     with open(QUERY_SPLIT_PATH, 'r') as file:
         query_split = json.load(file)
 
-    # evaluate all videos in turn
-    model_scores = {}
-    for kfold in range(4):
-        # split data
-        data_train = {}
-        data_valid = {}
-        data_test = {}
-        data_train[str((kfold + 0) % 4 + 1)] = data[str((kfold + 0) % 4 + 1)]
-        data_train[str((kfold + 1) % 4 + 1)] = data[str((kfold + 1) % 4 + 1)]
-        data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
-        data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
+    # info
+    logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd)
+    logging.info('WarmUp: ' + str(hp.warmup))
+    logging.info('Noam LR: ' + str(hp.lr_noam))
+    logging.info('Num Heads: ' + str(hp.num_heads))
+    logging.info('Num Blocks: ' + str(hp.num_blocks))
+    logging.info('Batchsize: ' + str(hp.bc))
+    logging.info('Max Steps: ' + str(hp.maxstep))
+    logging.info('Dropout Rate: ' + str(hp.dropout))
+    logging.info('Sequence Length: ' + str(hp.seq_len))
+    logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+    logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
+    logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
+    logging.info('Segment Nodes Number: ' + str(hp.segment_num))
+    logging.info('Segment Aggregation Mode: ' + str(hp.segment_mode))
+    logging.info('Memory Nodes Number: ' + str(hp.memory_num))
+    logging.info('Memory Nodes Dimension: ' + str(hp.memory_dimension))
+    logging.info('Memory Initialization: ' + str(hp.memory_init))
+    logging.info('Loss S1 Ratio: ' + str(hp.loss_s1_ratio))
+    logging.info('Loss Memory Diversity Ratio: ' + str(hp.mem_div))
+    logging.info('Loss Shots Diversity Ratio: ' + str(hp.shots_div))
+    logging.info('Loss Shots HL Ratio: ' + str(hp.shots_div_ratio))
+    logging.info('*' * 50)
 
-        # info
-        logging.info('*' * 20 + 'Settings' + '*' * 20)
-        logging.info('K-fold: ' + str(kfold))
-        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
-        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
-        logging.info('WarmUp: ' + str(hp.warmup))
-        logging.info('Noam LR: ' + str(hp.lr_noam))
-        logging.info('Num Heads: ' + str(hp.num_heads))
-        logging.info('Num Blocks: ' + str(hp.num_blocks))
-        logging.info('Batchsize: ' + str(hp.bc))
-        logging.info('Max Steps: ' + str(hp.maxstep))
-        logging.info('Dropout Rate: ' + str(hp.dropout))
-        logging.info('Sequence Length: ' + str(hp.seq_len))
-        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
-        logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
-        logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
-        logging.info('*' * 50)
-
-        # repeat
-        scores = []
-        for i in range(hp.repeat):
-            model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
-            models_to_restore = model_search(model_save_dir, observe=hp.observe)
-            for i in range(len(models_to_restore)):
-                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
-                model_path = models_to_restore[i]
-                f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding,
-                                 segment_dict, model_path, query_split, 1)
-                scores.append(f1)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores
-    scores_all = 0
-    for vid in model_scores:
-        scores = model_scores[vid]
-        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
-                     (vid, np.array(scores).mean(), str(scores)))
-        scores_all += np.array(scores).mean()
-    logging.info('Overall Results: %.3f' % (scores_all / 4))
+    # repeat
+    scores = []
+    for i in range(hp.repeat):
+        model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d/' % i
+        models_to_restore = model_search(model_save_dir, observe=hp.observe)
+        for i in range(len(models_to_restore)):
+            logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+            model_path = models_to_restore[i]
+            f1 = run_testing(data, data, queries, query_summary, Tags, concepts, concept_embedding,
+                             segment_dict, model_path, query_split, 1)
+            scores.append(f1)
+    logging.info('Overall Results: %.3f' % np.array(scores).mean())
 
 if __name__ == '__main__':
     tf.app.run()
