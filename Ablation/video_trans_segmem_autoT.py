@@ -804,8 +804,8 @@ def main(self):
         # info
         logging.info('*' * 20 + 'Settings' + '*' * 20)
         logging.info('K-fold: ' + str(kfold))
-        logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
-        logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
+        logging.info('Train: %d, %d' % ((3 - kfold) % 4 + 1, (2 - kfold) % 4 + 1))
+        logging.info('Valid: %d  Test: %d' % ((1 - kfold) % 4 + 1, (0 - kfold) % 4 + 1))
         logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd)
         logging.info('WarmUp: ' + str(hp.warmup))
         logging.info('Noam LR: ' + str(hp.lr_noam))
