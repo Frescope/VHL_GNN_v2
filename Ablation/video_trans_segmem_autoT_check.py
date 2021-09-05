@@ -766,6 +766,7 @@ def main(self):
     segment_dict = segment_embedding_build(data, hp)
 
     # evaluate all videos in turn
+    t_list = [83,64,59,36]
     model_scores = {}
     for kfold in range(4):
         # split data
@@ -791,7 +792,7 @@ def main(self):
         logging.info('Max Steps: ' + str(hp.maxstep))
         logging.info('Dropout Rate: ' + str(hp.dropout))
         logging.info('Sequence Length: ' + str(hp.seq_len))
-        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
+        logging.info('Evaluation Epoch: ' + str(hp.eval_epoch)) 
         logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
         logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
         logging.info('Segment Nodes Number: ' + str(hp.segment_num))
@@ -813,8 +814,8 @@ def main(self):
             for i in range(len(models_to_restore)):
                 logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
                 model_path = models_to_restore[i]
-                rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
-                # rank_num = math.ceil(np.mean(np.sum(data[str((1 - kfold) % 4 + 1)]['summary_label'], axis=0)))
+                # rank_num = math.floor(float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((1 - kfold) % 4 + 1)]['feature']))
+                rank_num = t_list[(0 - kfold) % 4]
                 f1 = run_testing(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, segment_dict,
                                  model_path, rank_num)
                 scores.append(f1)
