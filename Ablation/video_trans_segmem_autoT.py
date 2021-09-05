@@ -532,7 +532,7 @@ def evaluation_autothresh(pred_s1_lists, query_summary, Tags, test_vids, concept
     max_r = 0
     max_f = 0
     max_k = 0  # rank ratio
-    for step in range(16, 27, 2):
+    for step in range(17, 24, 1):
         rank_ratio = step / 1000  # 预测长度占比
         pos = 0
         PRE_values = []
