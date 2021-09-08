@@ -530,7 +530,12 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts, query_sp
     p_logits = pred_s1_lists[0]  # (bc*seq_len) * 48
     for i in range(1, len(pred_s1_lists)):
         p_logits = np.vstack((p_logits, pred_s1_lists[i]))
-
+    HL = {
+        '1': 60,
+        '2': 64,
+        '3': 62,
+        '4': 49
+    }
     pos = 0
     PRE_values_all = []
     REC_values_all = []
@@ -541,7 +546,8 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts, query_sp
         F1_values = []
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
+        # hl_num = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
+        hl_num = HL[str(vid)]
         p_predictions = p_logits[pos : pos + vlength]
         pos += vlength
         if not test_mode:

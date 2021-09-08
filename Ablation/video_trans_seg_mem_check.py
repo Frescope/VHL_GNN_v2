@@ -23,7 +23,7 @@ import networkx as nx
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='5',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -51,7 +51,7 @@ class Path:
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=75, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=10, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # memory参数
@@ -528,6 +528,12 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts):
     for i in range(1, len(pred_s1_lists)):
         p_logits = np.vstack((p_logits, pred_s1_lists[i]))
 
+    HL = {
+        '1':60,
+        '2':64,
+        '3':62,
+        '4':49
+    }
     pos = 0
     PRE_values = []
     REC_values = []
@@ -535,7 +541,8 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts):
     for i in range(len(test_vids)):
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
+        # hl_num = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
+        hl_num = HL[str(vid)]
         p_predictions = p_logits[pos : pos + vlength]
         pos += vlength
         for query in summary:
