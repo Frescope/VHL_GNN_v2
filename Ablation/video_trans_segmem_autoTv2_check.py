@@ -754,7 +754,7 @@ def run_testing(data_train, data_test, queries, query_summary, Tags, concepts, c
 
                 # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
                 p, r, f = evaluation_autothresh_test(pred_s1_lists, query_summary, Tags, test_vids, concepts, rank_num)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f, RN: %d' % (p, r, f, rank_num))
+
                 return f
     return 0
 

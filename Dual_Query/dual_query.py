@@ -1,6 +1,6 @@
-# 同时引入segment_embedding与memory nodes
-# 基础的video_translate模型
-# 添加对shots和memory节点的diversity loss
+# 使用video_trans_segmem_autoT改进
+# 在transformer输出中添加了每个片段内容的多样性度量，与原始得分
+# 添加以softmax得分作为权重的soft-diversity损失，使得对每个concept而言，排序靠前的片段尽量多样化
 
 import os
 import time
@@ -17,14 +17,13 @@ import argparse
 
 import scipy.io
 import pickle
-# from transformer_seg_mem import transformer
-from transformer_genericVS import transformer
+from transformer_dual_query import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='5',type=str)
+    parser.add_argument('--gpu', default='1',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -34,13 +33,14 @@ class Path:
     parser.add_argument('--dropout',default='0.1',type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=100000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=100, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=20, type=int)
+    parser.add_argument('--eval_epoch', default=1, type=int)
     parser.add_argument('--start', default='00', type=str)
-    parser.add_argument('--end', default='', type=str)
-    parser.add_argument('--protection', default=1000, type=int)  # 不检查步数太小的模型
+    parser.add_argument('--end', default='99', type=str)
+    parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
+    parser.add_argument('--run_mode', default='train', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
 
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
@@ -51,8 +51,11 @@ class Path:
     parser.add_argument('--qs_pr', default=0.1, type=float)  # query-summary positive ratio
     parser.add_argument('--concept_pr', default=0.5, type=float)
 
+    # score参数
+    parser.add_argument('--aux_pr', default=0.5, type=float)  # 用于dual_query的辅助得分比例
+
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=75, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=10, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # memory参数
@@ -61,10 +64,9 @@ class Path:
     parser.add_argument('--memory_init', default='random', type=str)  # random, text
 
     # loss参数
-    parser.add_argument('--loss_s1_ratio', default=0.80, type=float)  # pred损失比例
-    parser.add_argument('--mem_div', default=0.00, type=float)  # memory_diversity损失比例
-    parser.add_argument('--shots_div', default=0.00, type=float)  # shots_diversity损失比例
-    parser.add_argument('--shots_div_ratio', default=0.20, type=float)  # shots_diversity中挑选出的片段比例
+    parser.add_argument('--loss_pred_ratio', default=0.80, type=float)  # pred损失比例
+    parser.add_argument('--mem_div', default=0.10, type=float)  # memory_diversity损失比例
+    parser.add_argument('--shots_div', default=0.10, type=float)  # shots_diversity损失比例
 
 hparams = Path()
 parser = hparams.parser
@@ -78,7 +80,6 @@ if hp.server != 1:  # 更高版本tf
 else:
     tf.logging.set_verbosity(tf.logging.ERROR)
 
-
 # global paras
 D_FEATURE = 1024  # for I3D
 D_TXT_EMB = 300
@@ -87,7 +88,7 @@ CONCEPT_NUM = 48
 MAX_F1 = 0.2
 GRAD_THRESHOLD = 10.0  # gradient threshold2
 
-LOAD_CKPT_MODEL = False
+EVALUATE_MODEL = True
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
@@ -103,7 +104,6 @@ if hp.server == 0:
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_HL_utc_query/'
-    CKPT_MODEL_PATH = r'/public/data1/users/hulinkang/model_HL_utc_query/video_trans/'
 elif hp.server == 1:
     # path for USTC servers
     FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
@@ -116,7 +116,6 @@ elif hp.server == 1:
     CONCEPT_TXT_EMB_PATH = r'/data/linkang/VHL_GNN/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/data/linkang/VHL_GNN/utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/data/linkang/model_HL_v4/'
-    CKPT_MODEL_PATH = r'/data/linkang/model_HL_v4/utc_SA/'
 else:
     # path for JD A100 Server, make sure that VHL_GNN_V2 and utc folder are under the same directory
     FEATURE_BASE = r'../utc/features/'
@@ -129,7 +128,6 @@ else:
     CONCEPT_TXT_EMB_PATH = r'../utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'../utc/concept_embeddding/'
     MODEL_SAVE_BASE = r'/home/models/'
-    CKPT_MODEL_PATH = r'/home/models/'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -413,67 +411,63 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss_diverse(pred_s1_logits, pred_s1_labels, shots_output, memroy_output, hp):
+def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
+    # pred_scores: dual_query_scores, bc*seq_len*48
+    # pred_labels: bc*seq_len*48
     # shots_output: bc*seq_len*D
     # memory_output: bc*memory_num*D
-    # pred_s1_logits & pred_s1_labels: bc*seq_len*48
-    # 对s1_loss，计算各个shot在s1中所有concept相关预测上的NCE-Loss的均值
-    # 计算shots与memory的diversity-loss，s1_loss加权求和
+    # 对pred_loss，计算各个shot在标签中所有concept相关预测上的NCE-Loss的均值
+    # 计算shots与memory的diversity-loss，pred_loss加权求和
 
-    def diversity_loss(Vecs):
-        # 计算一组输入节点特征之间的多样性损失
-        vecs_len = Vecs.get_shape().as_list()[1]
-        Vecs_T = tf.transpose(Vecs, perm=(0, 2, 1))  # bc*D*vecslen
-        Products = tf.matmul(Vecs, Vecs_T)  # 点积，bc*vecslen*vecslen
+    def cosine_similarity(Vecs):
+        # 计算一组向量中每个向量与其他所有向量的相似度，不包含自身
+        # Vecs: bc*N*D
+        Vecs_T = tf.transpose(Vecs, perm=(0, 2, 1))  # bc*D*N
+        Products = tf.matmul(Vecs, Vecs_T)  # 点积，bc*N*N
 
-        Magnitude = tf.sqrt(tf.reduce_sum(tf.square(Vecs), axis=2, keep_dims=True))  # 求模，bc*vecslen*1
-        Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*vecslen
-        Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*vecslen*vecslen
+        Magnitude = tf.sqrt(tf.reduce_sum(tf.square(Vecs), axis=2, keep_dims=True))  # 求模，bc*N*1
+        Magnitude_T = tf.transpose(Magnitude, perm=(0, 2, 1))  # bc*1*N
+        Mag_product = tf.matmul(Magnitude, Magnitude_T)  # bc*N*N
 
-        loss = tf.reduce_sum(Products / (Mag_product + 1e-8), [1, 2])
-        obs1 = Products / (Mag_product + 1e-8)
-        loss = loss - vecs_len * 1 / (1 + 1e-8)  #减去每个序列中节点自身相乘得到的对角线上的1
-        obs2 = loss
-        loss = tf.reduce_mean(loss / (vecs_len - 1) / vecs_len)
-        return loss, [obs1, obs2]
+        similarity = Products / (Mag_product + 1e-8) + 1  # bc*N*N，每个元素与其他任一元素的相似度，加一以避免负值
+        similarity = tf.reduce_sum(similarity, axis=1, keepdims=True) - (1 / (1 + 1e-8) + 1)  # bc*1*N，每个元素与其他所有元素的相似度之和
+        return similarity
 
-    # for s1，与分解到concept的query-summary label
-    pred_s1_logits = tf.transpose(pred_s1_logits, perm=(0, 2, 1))  # bc*48*seq_len
-    pred_s1_logits = tf.reshape(pred_s1_logits, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
-    s1_labels_flat = tf.transpose(pred_s1_labels, perm=(0, 2, 1))
-    s1_labels_flat = tf.reshape(s1_labels_flat, shape=(-1, hp.seq_len))
-    s1_labels_bin = tf.cast(tf.cast(s1_labels_flat, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
+    # for pred，与分解到concept的query-summary label
+    pred_scores_flat = tf.transpose(pred_scores, perm=(0, 2, 1))  # bc*48*seq_len
+    pred_scores_flat = tf.reshape(pred_scores_flat, shape=(-1, hp.seq_len))  # (bc*48)*seq_len
+    labels_flat = tf.transpose(pred_labels, perm=(0, 2, 1))
+    labels_flat = tf.reshape(labels_flat, shape=(-1, hp.seq_len))
+    labels_bin = tf.cast(tf.cast(labels_flat, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
 
-    s1_nce_pos = tf.reduce_sum(tf.exp(s1_labels_bin * pred_s1_logits), axis=1)  # 分子
-    s1_nce_pos -= tf.reduce_sum((1 - s1_labels_bin), axis=1)  # 减去负例（为零）取e后的值（为1）
-    s1_nce_all = tf.reduce_sum(tf.exp(pred_s1_logits), axis=1)  # 分母
-    s1_nce_loss = -tf.log((s1_nce_pos / s1_nce_all) + 1e-5)
-    s1_loss = tf.reduce_mean(s1_nce_loss)
+    pred_nce_pos = tf.reduce_sum(tf.exp(labels_bin * pred_scores_flat), axis=1)  # 分子
+    pred_nce_pos -= tf.reduce_sum((1 - labels_bin), axis=1)  # 减去负例（为零）取e后的值（为1）
+    pred_nce_all = tf.reduce_sum(tf.exp(pred_scores_flat), axis=1)  # 分母
+    pred_nce_loss = -tf.log((pred_nce_pos / pred_nce_all) + 1e-5)
+    pred_loss = tf.reduce_mean(pred_nce_loss)
 
-    # for shots diversity
-    if hp.shots_div >= 0.01:
-        top_50 = tf.nn.top_k(pred_s1_logits, int(hp.seq_len * hp.shots_div_ratio))
-        top_indices = top_50.indices  # 没行（序列）前50%的索引
-        KeyVecs = []  # 得分较高的shot对应的重建向量
-        for i in range(top_indices.get_shape().as_list()[0]):  # i为展开后的pred第一维坐标
-            seq_pos = int(i / CONCEPT_NUM)  # 对应的输出特征中的序列位置
-            KeyVecs.append(tf.gather(shots_output[seq_pos:seq_pos+1], top_indices[i], axis=1))
-        KeyVecs = tf.concat(KeyVecs, axis=0)
-        shots_diverse_loss, _ = diversity_loss(KeyVecs)
+    # shots多样性
+    if hp.shots_div >= 0.05:
+        soft_weights = tf.nn.softmax(pred_scores, axis=1)  # bc*seq_len*48，计算对于每个concept的重要性权重
+        shots_similiarity = cosine_similarity(shots_output)  # bc*1*seq_len，计算每个片段特征对其他所有片段特征的相似度
+        shots_similiarity = tf.matmul(shots_similiarity, soft_weights)  # bc*1*48，相似度加权求和
+        shots_div_loss = tf.reduce_mean(
+            tf.reduce_sum(shots_similiarity, axis=2) / hp.seq_len / (hp.seq_len - 1))  # 对所有concept的相似度损失求和，再对所有序列求平均
     else:
-        shots_diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+        shots_div_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
-    # for memory diversity
+    # memory多样性
     if hp.mem_div >= 0.05:
-        Vecs = memroy_output  # 全部节点都应当不相似
-        mem_diverse_loss, obs = diversity_loss(Vecs)
+        memory_similiarity = cosine_similarity(memory_output)  # bc*1*mem_len
+        memory_div_loss = tf.reduce_mean(
+            tf.reduce_sum(memory_similiarity, axis=2) / hp.memory_num / (hp.memory_num - 1))  # 对所有memory节点 的相似度损失求和，再对所有序列求平均
     else:
-        mem_diverse_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+        memory_div_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
-    loss = s1_loss * hp.loss_s1_ratio  + \
-           shots_diverse_loss * hp.shots_div + \
-           mem_diverse_loss * hp.mem_div
-    return loss, [s1_loss, shots_diverse_loss, mem_diverse_loss]
+    loss = pred_loss * hp.loss_pred_ratio + \
+           shots_div_loss * hp.shots_div + \
+           memory_div_loss * hp.mem_div
+    return loss, [pred_loss, shots_div_loss, memory_div_loss]
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -525,7 +519,64 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
             sim_mat[i][j] = concept_IOU(vTags[shot_seq1[i]],vTags[shot_seq2[j]])
     return sim_mat
 
-def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts):
+def evaluation_autothresh(pred_s1_lists, query_summary, Tags, test_vids, concepts):
+    # 首先根据两组concept_logits选出一组候选集，然后从候选里根据summary_logits做最终预测
+    p_logits = pred_s1_lists[0]  # (bc*seq_len) * 48
+    for i in range(1, len(pred_s1_lists)):
+        p_logits = np.vstack((p_logits, pred_s1_lists[i]))
+
+    max_p = 0
+    max_r = 0
+    max_f = 0
+    max_k = 0  # rank ratio
+    for step in range(17, 24, 6):
+        rank_ratio = step / 1000  # 预测长度占比
+        pos = 0
+        PRE_values = []
+        REC_values = []
+        F1_values = []
+        for i in range(len(test_vids)):
+            vid, vlength = test_vids[i]
+            summary = query_summary[str(vid)]
+            hl_num = math.ceil(vlength * rank_ratio)
+            p_predictions = p_logits[pos : pos + vlength]
+            pos += vlength
+            for query in summary:
+                shots_gt = summary[query]
+                c1, c2 = query.split('_')
+                c1_ind = concepts.index(c1)
+                c2_ind = concepts.index(c2)
+
+                # make summary
+                pred_c1 = p_predictions[:, c1_ind]
+                pred_c2 = p_predictions[:, c2_ind]
+                scores = (pred_c1 + pred_c2) / 2
+                scores_indexes = scores.reshape((-1, 1))
+                scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1,1))))
+                shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
+                shots_pred = shots_pred[-hl_num:, 1].astype(int)
+                shots_pred.sort()
+
+                # compute
+                sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+                weight = shot_matching(sim_mat)
+                precision = weight / len(shots_pred)
+                recall = weight / len(shots_gt)
+                f1 = 2 * precision * recall / (precision + recall)
+                PRE_values.append(precision)
+                REC_values.append(recall)
+                F1_values.append(f1)
+        PRE_value = np.array(PRE_values).mean()
+        REC_value = np.array(REC_values).mean()
+        F1_value = np.array(F1_values).mean()
+        if F1_value > max_f:
+            max_p = PRE_value
+            max_r = REC_value
+            max_f = F1_value
+            max_k = rank_ratio
+    return max_p, max_r, max_f, max_k
+
+def evaluation_test(pred_s1_lists, query_summary, Tags, test_vids, concepts, rank_num):
     # 首先根据两组concept_logits选出一组候选集，然后从候选里根据summary_logits做最终预测
     p_logits = pred_s1_lists[0]  # (bc*seq_len) * 48
     for i in range(1, len(pred_s1_lists)):
@@ -538,8 +589,8 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts):
     for i in range(len(test_vids)):
         vid, vlength = test_vids[i]
         summary = query_summary[str(vid)]
-        hl_num = math.ceil(vlength * 0.02)  # stage 2, 最终取2%作为summary
-        p_predictions = p_logits[pos : pos + vlength]
+        hl_num = rank_num
+        p_predictions = p_logits[pos: pos + vlength]
         pos += vlength
         for query in summary:
             shots_gt = summary[query]
@@ -552,7 +603,7 @@ def evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts):
             pred_c2 = p_predictions[:, c2_ind]
             scores = (pred_c1 + pred_c2) / 2
             scores_indexes = scores.reshape((-1, 1))
-            scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1,1))))
+            scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
             shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
             shots_pred = shots_pred[-hl_num:, 1].astype(int)
             shots_pred.sort()
@@ -594,7 +645,19 @@ def model_clear(model_save_dir, max_f1):
             os.system('rm -rf %s' % file_path)
     return
 
-def run_training(data_train, data_test, queries, query_summary, Tags, concepts, concept_embedding, segment_dict, model_save_dir, test_mode):
+def model_search(model_save_dir):
+    # 找到要验证的模型名称
+    model_to_restore = []
+    for root,dirs,files in os.walk(model_save_dir):
+        for file in files:
+            if file.endswith('.meta'):
+                model_name = file.split('.meta')[0]
+                model_to_restore.append(os.path.join(root, model_name))
+    model_to_restore = list(set(model_to_restore))
+    return model_to_restore
+
+def run_training(data_train, data_test, query_summary, Tags, concepts, concept_embedding, segment_dict,
+                 test_mode, model_save_dir, model_path, rank_num):
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
     max_f1 = MAX_F1
@@ -607,7 +670,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         segment_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.segment_num, D_FEATURE))
         segment_poses_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.segment_num))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len + hp.segment_num + hp.memory_num))
-        pred_s1_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_C_OUTPUT))
+        pred_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_C_OUTPUT))
         dropout_holder = tf.placeholder(tf.float32, shape=())
         training_holder = tf.placeholder(tf.bool, shape=())
 
@@ -633,7 +696,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
 
         # graph building
         tower_grads_train = []
-        pred_s1_logits_list = []
+        pred_scores_list = []
         loss_list = []
         loss_ob_list = []
         for gpu_index in range(hp.gpu_num):
@@ -643,15 +706,14 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 segment_embs = segment_embs_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 segment_poses = segment_poses_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 scores_src = scores_src_holder[gpu_index * hp.bc : (gpu_index+1) * hp.bc]
-                pred_s1_labels = pred_s1_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
+                pred_labels = pred_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
 
-                # 整合concept与summary的预测，形成最终预测
-                pred_s1_logits, shots_output, memory_output = transformer(segment_embs, features, memory_nodes,
+                shots_output, memory_output, sigmoid_score, aux_score = transformer(segment_embs, features, memory_nodes,
                                              segment_poses, positions, scores_src, dropout_holder, training_holder, hp, D_C_OUTPUT)
-                pred_s1_logits_list.append(pred_s1_logits)
+                pred_scores = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score
+                pred_scores_list.append(pred_scores)
 
-                  # 训练时每个序列只针对一个query预测summary
-                loss, loss_ob = tower_loss_diverse(pred_s1_logits, pred_s1_labels, shots_output, memory_output, hp)
+                loss, loss_ob = tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -672,10 +734,10 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         sess.run(init)
 
         # load model
-        saver_overall = tf.train.Saver(max_to_keep=100)
-        if LOAD_CKPT_MODEL:
-            logging.info(' Ckpt Model Restoring: ' + CKPT_MODEL_PATH)
-            saver_overall.restore(sess, CKPT_MODEL_PATH)
+        saver_overall = tf.train.Saver(max_to_keep=20)
+        if test_mode:
+            logging.info(' Ckpt Model Restoring: ' + model_path)
+            saver_overall.restore(sess, model_path)
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
@@ -691,15 +753,16 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         for step in range(hp.maxstep):
             features_b, positions_b, segment_embs_b, segment_poses_b, scores_b, s1_labels_b = \
                 get_batch_train(data_train, segment_dict, train_scheme, step, hp)
-            scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.memory_num))))  # encoder中开放所有concept节点
+            scores_src_b = np.hstack(
+                (scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.memory_num))))  # encoder中开放所有concept节点
             observe = sess.run([train_op] +
                                loss_list +
-                               pred_s1_logits_list +
+                               pred_scores_list +
                                loss_ob_list,
                                feed_dict={features_holder: features_b,
                                           positions_holder: positions_b,
                                           scores_src_holder: scores_src_b,
-                                          pred_s1_labels_holder: s1_labels_b,
+                                          pred_labels_holder: s1_labels_b,
                                           segment_embs_holder: segment_embs_b,
                                           segment_poses_holder: segment_poses_b,
                                           dropout_holder: hp.dropout,
@@ -727,7 +790,7 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 logging.info(' Evaluate: ' + str(step) + ' Epoch: ' + str(epoch))
                 logging.info(' Average Loss: ' + str(np.mean(loss_array)) + ' Min Loss: ' + str(
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
-                logging.info('S1_Loss: %.4f Shots_Diverse_Loss: %.4f Memory_Diverse_Loss: %.4f'%
+                logging.info('S1_Loss: %.4f Shots_Diverse_Loss: %.4f Memory_Diverse_Loss: %.4f' %
                              (sub_loss_array[0], sub_loss_array[1], sub_loss_array[2]))
                 if step < hp.protection or not int(epoch) % hp.eval_epoch == 0:
                     continue  # 增大测试间隔
@@ -736,28 +799,31 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
                 for test_step in range(max_test_step):
                     features_b, positions_b, segment_embs_b, segment_poses_b, scores_b = \
                         get_batch_test(data_test, segment_dict, test_scheme, test_step, hp)
-                    scores_src_b = np.hstack((scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.memory_num))))  # encoder中开放所有concept节点
-                    temp_list = sess.run(pred_s1_logits_list,feed_dict={features_holder: features_b,
-                                                                        positions_holder: positions_b,
-                                                                        scores_src_holder: scores_src_b,
-                                                                        segment_embs_holder: segment_embs_b,
-                                                                        segment_poses_holder: segment_poses_b,
-                                                                        dropout_holder: hp.dropout,
-                                                                        training_holder: False})
+                    scores_src_b = np.hstack((scores_b, np.ones(
+                        (hp.gpu_num * hp.bc, hp.segment_num + hp.memory_num))))  # encoder中开放所有concept节点
+                    temp_list = sess.run(pred_scores_list, feed_dict={features_holder: features_b,
+                                                                         positions_holder: positions_b,
+                                                                         scores_src_holder: scores_src_b,
+                                                                         segment_embs_holder: segment_embs_b,
+                                                                         segment_poses_holder: segment_poses_b,
+                                                                         dropout_holder: hp.dropout,
+                                                                         training_holder: False})
                     for preds in temp_list:
                         pred_s1_lists.append(preds.reshape((-1, D_C_OUTPUT)))
 
-                # p, r, f = evaluation(pred_scores, queries, query_summary, Tags, test_vids, concepts)
-                p, r, f = evaluation(pred_s1_lists, query_summary, Tags, test_vids, concepts)
-                logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f' % (p, r, f))
+                if test_mode == 0:
+                    p, r, f, t = evaluation_autothresh(pred_s1_lists, query_summary, Tags, test_vids, concepts)
+                    logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f, Rank: %.3f' % (p, r, f, t))
+                else:
+                    p, r, f = evaluation_test(pred_s1_lists, query_summary, Tags, test_vids, concepts, rank_num)
+                    logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f, RN: %d' % (p, r, f, rank_num))
+                    return f
 
-                if test_mode == 1:
-                    return
                 # save model
                 if step > MIN_TRAIN_STEPS - PRESTEPS and f >= max_f1:
                     max_f1 = f
                     model_clear(model_save_dir, max_f1)
-                    model_path = model_save_dir + 'S%d-E%d-L%.6f-F%.3f' % (step, epoch, np.mean(loss_array), f)
+                    model_path = model_save_dir + 'S%d-E%d-L%.6f-T%.3f-F%.3f' % (step, epoch, np.mean(loss_array), t, f)
                     saver_overall.save(sess, model_path)
                     logging.info('Model Saved: ' + model_path + '\n')
 
@@ -770,21 +836,12 @@ def run_training(data_train, data_test, queries, query_summary, Tags, concepts, 
         model_path = model_save_dir + 'S%d' % (hp.maxstep + PRESTEPS)
         # saver_overall.save(sess, model_path)
         logging.info('Model Saved: ' + str(hp.maxstep + PRESTEPS))
+    return 0
 
 def main(self):
-    Tags = load_Tags(TAGS_PATH)
-    data = load_feature_4fold(FEATURE_BASE, S1_LABEL_PATH, Tags)
-    queries, query_summary = load_query_summary(QUERY_SUM_BASE)
-    concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
-    segment_dict = segment_embedding_build(data, hp)
 
-    # evaluate all videos in turn
-    kfold_start = int(int(hp.start) / 10)
-    repeat_start = int(hp.start) % 10
-    for kfold in range(4):
-        if kfold < kfold_start:
-            continue
-        # split data
+    def preprocess(data, kfold):
+        # 划分数据集，输出信息
         data_train = {}
         data_valid = {}
         data_test = {}
@@ -793,12 +850,11 @@ def main(self):
         data_valid[str((kfold + 2) % 4 + 1)] = data[str((kfold + 2) % 4 + 1)]
         data_test[str((kfold + 3) % 4 + 1)] = data[str((kfold + 3) % 4 + 1)]
 
-        # info
         logging.info('*' * 20 + 'Settings' + '*' * 20)
         logging.info('K-fold: ' + str(kfold))
         logging.info('Train: %d, %d' % ((kfold + 0) % 4 + 1, (kfold + 1) % 4 + 1))
         logging.info('Valid: %d  Test: %d' % ((kfold + 2) % 4 + 1, (kfold + 3) % 4 + 1))
-        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd + '_%d' % kfold)
+        logging.info('Model Base: ' + MODEL_SAVE_BASE + hp.msd)
         logging.info('WarmUp: ' + str(hp.warmup))
         logging.info('Noam LR: ' + str(hp.lr_noam))
         logging.info('Num Heads: ' + str(hp.num_heads))
@@ -810,8 +866,35 @@ def main(self):
         logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
         logging.info('Query Positive Ratio: ' + str(hp.qs_pr))
         logging.info('Concept Positive Ratio: ' + str(hp.concept_pr))
+        logging.info('Auxiliary Score Ratio: ' + str(hp.aux_pr))
+        logging.info('Segment Nodes Number: ' + str(hp.segment_num))
+        logging.info('Segment Aggregation Mode: ' + str(hp.segment_mode))
+        logging.info('Memory Nodes Number: ' + str(hp.memory_num))
+        logging.info('Memory Nodes Dimension: ' + str(hp.memory_dimension))
+        logging.info('Memory Initialization: ' + str(hp.memory_init))
+        logging.info('Loss S1 Ratio: ' + str(hp.loss_pred_ratio))
+        logging.info('Loss Memory Diversity Ratio: ' + str(hp.mem_div))
+        logging.info('Loss Shots Diversity Ratio: ' + str(hp.shots_div))
         logging.info('*' * 50)
 
+        return data_train, data_valid, data_test
+
+    Tags = load_Tags(TAGS_PATH)
+    data = load_feature_4fold(FEATURE_BASE, S1_LABEL_PATH, Tags)
+    queries, query_summary = load_query_summary(QUERY_SUM_BASE)
+    concepts, concept_embedding = load_concept(CONCEPT_DICT_PATH, CONCEPT_TXT_EMB_PATH, CONCEPT_IMG_EMB_DIR)
+    segment_dict = segment_embedding_build(data, hp)
+
+    # 全部训练一次
+    logging.info('*' * 20 + 'Training:' + '*' * 20)
+    kfold_start = int(int(hp.start) / 10)
+    kfold_end = min(4, int(int(hp.end) / 10))
+    repeat_start = int(hp.start) % 10
+    repeat_end = min(hp.repeat, int(hp.end) % 10)
+    for kfold in range(kfold_start, kfold_end + 1):
+        if hp.run_mode == 'test':
+            break
+        data_train, data_valid, data_test = preprocess(data, kfold)
         # repeat
         for i in range(hp.repeat):
             if kfold == kfold_start and i < repeat_start:
@@ -819,15 +902,38 @@ def main(self):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
-            run_training(data_train, data_valid, queries, query_summary, Tags, concepts, concept_embedding, segment_dict,
-                         model_save_dir, 0)
+            run_training(data_train, data_valid, query_summary, Tags, concepts, concept_embedding, segment_dict,
+                         0, model_save_dir, '', 0)
             logging.info('*' * 60)
-            if len(hp.end) > 0:
-                kfold_end = int(int(hp.end) / 10)
-                repeat_end = int(hp.end) % 10
-                if kfold >= kfold_end and i >= repeat_end:
-                    return
+            if kfold >= kfold_end and i >= repeat_end:
+                break
         logging.info('^' * 60 + '\n')
+
+    # 测试
+    logging.info('*' * 20 + 'Testing:' + '*' * 20)
+    model_scores = {}
+    for kfold in range(4):
+        data_train, data_valid, data_test = preprocess(data, kfold)
+        scores = []
+        for i in range(hp.repeat):
+            model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
+            models_to_restore = model_search(model_save_dir)
+            for i in range(len(models_to_restore)):
+                logging.info('-' * 20 + str(i) + ': ' + models_to_restore[i].split('/')[-1] + '-' * 20)
+                model_path = models_to_restore[i]
+                rank_num = math.floor(
+                    float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((kfold + 2) % 4 + 1)]['feature']))
+                f1 = run_training(data_train, data_test, query_summary, Tags, concepts, concept_embedding, segment_dict,
+                         1, model_save_dir, model_path, rank_num)
+                scores.append(f1)
+        model_scores[str((kfold + 3) % 4 + 1)] = scores
+    scores_all = 0
+    for vid in model_scores:
+        scores = model_scores[vid]
+        logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
+                     (vid, np.array(scores).mean(), str(scores)))
+        scores_all += np.array(scores).mean()
+    logging.info('Overall Results: %.3f' % (scores_all / 4))
 
 if __name__ == '__main__':
     tf.app.run()
