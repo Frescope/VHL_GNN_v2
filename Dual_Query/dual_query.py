@@ -792,7 +792,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                     np.min(loss_array)) + ' Max Loss: ' + str(np.max(loss_array)))
                 logging.info('S1_Loss: %.4f Shots_Diverse_Loss: %.4f Memory_Diverse_Loss: %.4f' %
                              (sub_loss_array[0], sub_loss_array[1], sub_loss_array[2]))
-                if step < hp.protection or not int(epoch) % hp.eval_epoch == 0:
+                if test_mode == 0 and (step < hp.protection or not int(epoch) % hp.eval_epoch == 0):
                     continue  # 增大测试间隔
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_s1_lists = []
