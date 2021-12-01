@@ -775,7 +775,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
 
             # save checkpoint &  evaluate
             epoch = step / epoch_step
-            if step % epoch_step == 0 or (step + 1) == hp.maxstep:
+            if step % epoch_step == 0 or (step + 1) == hp.maxstep or test_mode == 1:
                 if step == 0 and test_mode == 0:
                     continue
                 train_scheme = train_scheme_build(data_train, concepts, query_summary, hp)  # shuffle train scheme
