@@ -34,7 +34,7 @@ class Path:
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=100, type=int)
-    parser.add_argument('--repeat', default=1, type=int)
+    parser.add_argument('--repeat', default=3, type=int)
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch', default=1, type=int)
     parser.add_argument('--start', default='00', type=str)
@@ -888,7 +888,7 @@ def main(self):
     # 全部训练一次
     logging.info('*' * 20 + 'Training:' + '*' * 20)
     kfold_start = int(int(hp.start) / 10)
-    kfold_end = min(4, int(int(hp.end) / 10))
+    kfold_end = min(3, int(int(hp.end) / 10))
     repeat_start = int(hp.start) % 10
     repeat_end = min(hp.repeat, int(hp.end) % 10)
     for kfold in range(kfold_start, kfold_end + 1):
@@ -902,8 +902,8 @@ def main(self):
             model_save_dir = MODEL_SAVE_BASE + hp.msd + '_%d_%d/' % (kfold, i)
             logging.info('*' * 10 + str(i) + ': ' + model_save_dir + '*' * 10)
             logging.info('*' * 60)
-            run_training(data_train, data_valid, query_summary, Tags, concepts, concept_embedding, segment_dict,
-                         0, model_save_dir, '', 0)
+            # run_training(data_train, data_valid, query_summary, Tags, concepts, concept_embedding, segment_dict,
+            #              0, model_save_dir, '', 0)
             logging.info('*' * 60)
             if kfold >= kfold_end and i >= repeat_end:
                 break
@@ -923,9 +923,9 @@ def main(self):
                 model_path = models_to_restore[i]
                 rank_num = math.floor(
                     float(model_path.split('-')[-2].split('T')[-1]) * len(data[str((kfold + 2) % 4 + 1)]['feature']))
-                f1 = run_training(data_train, data_test, query_summary, Tags, concepts, concept_embedding, segment_dict,
-                         1, model_save_dir, model_path, rank_num)
-                scores.append(f1)
+                # f1 = run_training(data_train, data_test, query_summary, Tags, concepts, concept_embedding, segment_dict,
+                #          1, model_save_dir, model_path, rank_num)
+                # scores.append(f1)
         model_scores[str((kfold + 3) % 4 + 1)] = scores
     scores_all = 0
     for vid in model_scores:
