@@ -103,7 +103,7 @@ if hp.server == 0:
     CONCEPT_DICT_PATH = r'/public/data1/users/hulinkang/utc/origin_data/Dense_per_shot_tags/Dictionary.txt'
     CONCEPT_TXT_EMB_PATH = r'/public/data1/users/hulinkang/utc/processed/query_dictionary.pkl'
     CONCEPT_IMG_EMB_DIR = r'/public/data1/users/hulinkang/utc/concept_embeddding/'
-    MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_HL_utc_query/'
+    MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_utc2/'
 elif hp.server == 1:
     # path for USTC servers
     FEATURE_BASE = r'/data/linkang/VHL_GNN/utc/features/'
