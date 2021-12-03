@@ -57,7 +57,7 @@ class Path:
     parser.add_argument('--aux_pr', default=0.5, type=float)  # 用于dual_query的辅助得分比例
 
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=10, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=0, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # query-embedding参数
@@ -218,6 +218,10 @@ def segment_embedding_build(data, hp):
     for vid in data:
         segment_dict[vid] = {}
         vlength = len(data[vid]['feature'])
+        if segnum == 0:  # 没有segment节点的情况
+            segment_dict[vid]['segment_emb'] = np.zeros((0, D_VISUAL))
+            segment_dict[vid]['segment_pos'] = np.zeros((0,))
+            continue
         seglength = math.floor(vlength / segnum)  # 每个segment覆盖的范围
         segments = []
         poses = []
