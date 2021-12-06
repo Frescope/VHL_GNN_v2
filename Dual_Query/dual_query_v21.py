@@ -1,8 +1,6 @@
-# 使用attention结构作为预测函数
-# 序列中包括片段、文本、segment、memory四种节点
-# 使用CLIP文本与图像特征，使用随机化的memory节点
-# 支持无segment节点的情况
-# 按照shot成组，输入frame-level特征，在输出端做平均池化，得到shot表征
+# 使用Self-attention结构实现在输出端的帧聚合
+# TODO：多层聚合
+# TODO：前期聚合
 
 import os
 import time
@@ -19,13 +17,13 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_dual_query_v2 import transformer
+from transformer_dual_query_v21 import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='2',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -38,7 +36,7 @@ class Path:
     parser.add_argument('--maxstep', default=10000, type=int)
     parser.add_argument('--repeat', default=3, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=5, type=int)
+    parser.add_argument('--eval_epoch', default=10, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
@@ -47,6 +45,8 @@ class Path:
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
+    parser.add_argument('--num_blocks_local',default=3,type=int)  # local attention的层数
+    parser.add_argument('--local_attention_pose',default='early',type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
     parser.add_argument('--seq_len',default=25,type=int)  # shot数量，实际序列长度需要乘以5
@@ -401,7 +401,7 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss(pred_scores, pred_labels, frame_output, memory_output, hp):
+def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
     # pred_scores: dual_query_scores, bc*seq_len*48
     # pred_labels: bc*seq_len*48
     # shots_output: bc*seq_len*D
@@ -439,7 +439,6 @@ def tower_loss(pred_scores, pred_labels, frame_output, memory_output, hp):
     # shots多样性
     if hp.shots_div >= 0.05:
         soft_weights = tf.nn.softmax(pred_scores, axis=1)  # bc*seq_len*48，计算对于每个concept的重要性权重
-        shots_output = tf.reduce_mean(tf.reshape(frame_output, (hp.bc, hp.seq_len, FRAME_PER_SHOT, -1)), axis=2)
         shots_similiarity = cosine_similarity(shots_output)  # bc*1*seq_len，计算每个片段特征对其他所有片段特征的相似度
         shots_similiarity = tf.matmul(shots_similiarity, soft_weights)  # bc*1*48，相似度加权求和
         shots_div_loss = tf.reduce_mean(
@@ -703,7 +702,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                 scores_src = scores_src_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 pred_labels = pred_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
 
-                frame_output, memory_output, sigmoid_score, aux_score = transformer(features,segment_embs,
+                shot_output, memory_output, sigmoid_score, aux_score = transformer(features,segment_embs,
                                                                                     query_embs, memory_nodes,
                                                                                     segment_poses, positions,
                                                                                     scores_src, dropout_holder,
@@ -711,7 +710,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                 pred_scores = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score
                 pred_scores_list.append(pred_scores)
 
-                loss, loss_ob = tower_loss(pred_scores, pred_labels, frame_output, memory_output, hp)
+                loss, loss_ob = tower_loss(pred_scores, pred_labels, shot_output, memory_output, hp)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -859,6 +858,8 @@ def main(self):
         logging.info('Noam LR: ' + str(hp.lr_noam))
         logging.info('Num Heads: ' + str(hp.num_heads))
         logging.info('Num Blocks: ' + str(hp.num_blocks))
+        logging.info('Local Attention Blocks: ' + str(hp.num_blocks_local))
+        logging.info('Local Attention Position: ' + str(hp.local_attention_pose))
         logging.info('Batchsize: ' + str(hp.bc))
         logging.info('Max Steps: ' + str(hp.maxstep))
         logging.info('Dropout Rate: ' + str(hp.dropout))
@@ -936,3 +937,5 @@ def main(self):
 
 if __name__ == '__main__':
     tf.app.run()
+
+
