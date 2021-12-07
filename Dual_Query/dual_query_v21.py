@@ -30,7 +30,7 @@ class Path:
 
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
-    parser.add_argument('--dropout',default='0.1',type=float)
+    parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
     parser.add_argument('--maxstep', default=10000, type=int)
@@ -46,7 +46,7 @@ class Path:
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--num_blocks_local',default=3,type=int)  # local attention的层数
-    parser.add_argument('--local_attention_pose',default='early',type=str)  # late & early，local attention的位置，前融合或后融合
+    parser.add_argument('--local_attention_pose',default='late',type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
     parser.add_argument('--seq_len',default=25,type=int)  # shot数量，实际序列长度需要乘以5
@@ -57,7 +57,7 @@ class Path:
     parser.add_argument('--aux_pr', default=0.5, type=float)  # 用于dual_query的辅助得分比例
 
     # segment-embedding参数
-    parser.add_argument('--segment_num', default=0, type=int)  # segment节点数量
+    parser.add_argument('--segment_num', default=10, type=int)  # segment节点数量
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # query-embedding参数

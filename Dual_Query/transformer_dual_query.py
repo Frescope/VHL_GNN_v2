@@ -189,7 +189,7 @@ def transformer(segment_embs, features, memory_embs,
 
         # encoding & decoding
         enc_output = encoder(input_nodes, src_masks, drop_out, training, hp)
-        shots_output= enc_output[: , 0 : hp.seq_len, :]
+        shots_output = enc_output[: , 0 : hp.seq_len, :]
         memory_output = enc_output[:, -hp.memory_num : ,]
 
         prediction_branch = tf.layers.dense(shots_output, 1024, use_bias=True, activation=tf.nn.relu)
