@@ -1,6 +1,4 @@
 # 使用Self-attention结构实现在输出端的帧聚合
-# TODO：多层聚合
-# TODO：前期聚合
 
 import os
 import time
@@ -530,7 +528,7 @@ def evaluation_autothresh(pred_s1_lists, query_summary, Tags, test_vids, concept
             summary = query_summary[str(vid)]
             hl_num = math.ceil(vlength * rank_ratio)
             p_predictions = p_logits[pos : pos + vlength]
-            pos += vlength
+            pos += vlength  # utc中测试时只有一个视频，故不需要padding
             for query in summary:
                 shots_gt = summary[query]
                 c1, c2 = query.split('_')

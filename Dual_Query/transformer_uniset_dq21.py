@@ -1,6 +1,6 @@
-# 使用shot内部的局部self-attention聚合帧特征为片段特征
 # 使用attention结构作为预测函数
 # 序列中包括片段、文本、segment、memory四种节点
+# 输出时选择与query相关的部分
 
 import tensorflow as tf
 import numpy as np
@@ -216,7 +216,7 @@ def local_attention(frame_embs, hp):
     return shot_embs
 
 def transformer(img_embs, segment_embs, txt_embs, memory_embs,
-                segment_positions, feature_positions,
+                segment_positions, feature_positions, indexes,
                 scores_src, drop_out, training, hp):
     with tf.variable_scope("transformer", reuse=tf.AUTO_REUSE):
         # encoder & decoder inputs
@@ -228,18 +228,6 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
         visual_nodes += positional_encoding(visual_nodes, feature_positions)
         segment_nodes += positional_encoding(segment_nodes, segment_positions)
 
-        # early local attention
-        FNUM = 5
-        if hp.local_attention_pose == 'early':
-            visual_nodes = local_attention(visual_nodes, hp)
-            scores_src_shots, scores_src_rem = tf.split(scores_src,
-                                                        [hp.seq_len*FNUM, hp.segment_num+hp.query_num+hp.memory_num],
-                                                        axis=1)
-            scores_src_shots = tf.reshape(scores_src_shots, [hp.bc*hp.gpu_num, hp.seq_len, FNUM])
-            scores_src_shots = tf.reduce_mean(scores_src_shots, axis=2)  # 收缩scores mask到shot水平
-            scores_src = tf.concat([scores_src_shots, scores_src_rem], axis=1)
-            FNUM = 1  # 后续每个shot只有一个特征
-
         input_nodes = [visual_nodes, segment_nodes, query_nodes, memory_nodes]
         input_nodes = segment_embedding(input_nodes, hp)
 
@@ -247,12 +235,9 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
 
         # encoding & decoding
         enc_output = encoder(input_nodes, src_masks, drop_out, training, hp)
-        shot_output= enc_output[: , 0 : hp.seq_len * FNUM, :]
+        shot_output= enc_output[: , 0 : hp.seq_len, :]
         query_output = enc_output[:, -(hp.memory_num+hp.query_num) : -hp.memory_num, :]
         memory_output = enc_output[:, -hp.memory_num : ,]
-
-        if hp.local_attention_pose == 'late':
-            shot_output = local_attention(shot_output, hp)  # bc*seqlen*D
 
         # visual branch
         visual_branch = tf.layers.dense(shot_output, 1024, use_bias=True, activation=tf.nn.relu)
@@ -269,6 +254,14 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
         sigmoid_score = tf.sigmoid(corr_mat)  # 对每个query，计算所有片段的相关性，片段间不影响
         softmax_logits = tf.nn.softmax(corr_mat, axis=1)  # 对每个片段，计算其与所有query的相关性，首先对片段做归一化
         aux_score = tf.nn.softmax(tf.reduce_sum(softmax_logits, axis=2, keepdims=True), axis=1)  # 附加得分，对应到每个片段
+        pred_matrix = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score  # bc*seqlen*q_num
 
-        return shot_output, memory_output, sigmoid_score, aux_score
+        # 选取与query相关的部分
+        pred_scores = []
+        for i in range(hp.bc):
+            ind = indexes[i]
+            pred_scores.append(pred_matrix[i : i + 1, :, ind])
+        pred_scores = tf.concat(pred_scores, axis=0)  # bc*seqlen
+
+        return shot_output, memory_output, pred_scores
 

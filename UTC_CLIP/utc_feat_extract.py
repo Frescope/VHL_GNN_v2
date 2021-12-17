@@ -60,7 +60,7 @@ def getConceptFeatures(concept_path):
         concept_embs = {}
         for word in concepts:
             word_emb = clip.tokenize(word).to(device)
-            word_feature =  model.encode_text(word_emb)
+            word_feature = model.encode_text(word_emb)
             concept_embs[word] = word_feature.cpu().numpy()
 
         with open(r'/data/linkang/VHL_GNN/utc/concept_clip.pkl', 'wb') as file:
