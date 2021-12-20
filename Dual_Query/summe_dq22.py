@@ -24,10 +24,10 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='2',type=str)
+    parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--msd', default='video_trans', type=str)
+    parser.add_argument('--msd', default='summe_test', type=str)
 
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
@@ -63,7 +63,7 @@ class Path:
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # query-embedding参数
-    parser.add_argument('--query_num', default=10, type=int)  # query节点数量，对应三个数据集中的query总数
+    parser.add_argument('--query_num', default=25, type=int)  # query节点数量，对应三个数据集中的query总数
 
     # memory参数
     parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
@@ -108,10 +108,10 @@ elif hp.server == 1:
 logging.basicConfig(level=logging.INFO)
 
 def load_query(uniset_base):
-    with open(uniset_base + 'tvsum_clip_text.pkl', 'rb') as file:
-        tvsum = pickle.load(file)
+    with open(uniset_base + 'summe_clip_text.pkl', 'rb') as file:
+        summe = pickle.load(file)
     query_embedding = {}
-    for data in [tvsum]:
+    for data in [summe]:
         for category in data:
             text = data[category]['text']
             embedding = data[category]['feature']
@@ -119,7 +119,7 @@ def load_query(uniset_base):
                 query_embedding[text] = embedding
     queries = list(query_embedding.keys())
     queries.sort()
-    return queries, query_embedding, tvsum
+    return queries, query_embedding, summe
 
 def segment_embedding(feature):
     if hp.segment_num == 0:
@@ -155,15 +155,13 @@ def load_data(uniset_base, hp):
     # load labels
     with open(uniset_base + 'uniset_labels.json', 'r') as file:
         uniset_labels = json.load(file)
-    with open(uniset_base + 'labels_raw/tvsum_score_record.json', 'r') as file:
-        tvsum_score_record = json.load(file)
 
     # load text embeddings
-    queries, query_embedding, tvsum_dict = load_query(uniset_base)  # 需要额外使用类型-文本映射关系
+    queries, query_embedding, summe_dict = load_query(uniset_base)  # 需要额外使用类型-文本映射关系
 
     # load features & organize data
     data = {}
-    name = 'tvsum'
+    name = 'summe'
     data[name] = {}
     for vid in uniset_labels[name]:
         data[name][vid] = {}
@@ -172,7 +170,7 @@ def load_data(uniset_base, hp):
         data[name][vid]['feature'] = np.load(feature_path)
         # label
         label_line = np.array(uniset_labels[name][vid]['single_score'])  # or single_binary
-        text = tvsum_dict[tvsum_score_record[vid]['category']]['text']  # 找出这一视频对应的query文本
+        text = summe_dict[vid]['text']  # 找出这一视频对应的query文本
         data[name][vid]['query_text'] = text
         data[name][vid]['frame_label'] = label_line.reshape((-1,))
         # segment
@@ -211,30 +209,18 @@ def load_data(uniset_base, hp):
                      ' Query: ' + str(data[name][vid]['query_text'])
                      )
 
-    # split data
-    # classify videos in tvsum
-    tvsum_vids = list(tvsum_score_record.keys())
-    tvsum_video_split = {}
-    for vid in tvsum_vids:
-        info = tvsum_score_record[vid]
-        if info['category'] not in tvsum_video_split:
-            tvsum_video_split[info['category']] = []
-        tvsum_video_split[info['category']].append(vid)
-    tvsum_categories = list(tvsum_video_split.keys())
-    tvsum_categories.sort()
-    for c in tvsum_categories:
-        tvsum_video_split[c].sort()
     # split in 5 parts
     K = 5
     data_split = {}
+    summe_videos = list(data['summe'].keys())
+    summe_videos.sort()
     for i in range(K):
         data_split[i] = {}
-        # tvsum
-        temp_list = []
-        for j in range(len(tvsum_categories)):
-            temp_list.append(tvsum_video_split[tvsum_categories[j]].pop(0))  # 从各个类别的队首各取一个，保持顺序
+        # summe
+        summe_num = math.ceil(len(summe_videos) / K)
+        temp_list = summe_videos[i * summe_num: (i + 1) * summe_num]
         for vid in temp_list:
-            data_split[i][vid] = data['tvsum'][vid]
+            data_split[i][vid] = data['summe'][vid]
 
     return data_split, uniset_labels, queries, query_embedding
 
@@ -442,36 +428,7 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
         loss_list.append(loss_temp)
     pred_loss /= hp.bc
 
-    # # ranking-loss ListNet
-    # pred_scores_sort = []
-    # pred_labels_sort = []
-    # for i in range(hp.bc):
-    #     indices = tf.nn.top_k(pred_labels[i], k=hp.shot_num).indices
-    #     pred_scores_sort.append(tf.gather(pred_scores[i], indices))  # 排序后, bc*shotnum
-    #     pred_labels_sort.append(tf.gather(pred_labels[i], indices))
-    # scores_sums = tf.reduce_sum(pred_scores, axis=1)
-    # labels_sums = tf.reduce_sum(pred_labels, axis=1)
-    # pred_loss = 0
-    # loss_list = []
-    # for i in range(hp.bc):
-    #     score_sum = scores_sums[i]
-    #     score_product = 1
-    #     for j in range(hp.shot_num):
-    #         item = pred_scores_sort[i][j] / (score_sum + 1e-6)  # 当前要乘的一项
-    #         score_product *= item
-    #         score_sum -= pred_scores_sort[i][j]
-    #     label_sum = labels_sums[i]
-    #     label_product = 1
-    #     for j in range(hp.shot_num):
-    #         item = pred_labels_sort[i][j] / (label_sum + 1e-6)
-    #         label_product *= item
-    #         label_sum -= pred_labels_sort[i][j]
-    #     loss_list.append((label_product, score_product))
-    #     pred_loss += tf.exp(label_product) * tf.log((label_product + 1e-8) / score_product)
-    # pred_loss /= hp.bc
-
     # shots多样性
-
     if hp.shots_div >= 0.05:
         length = pred_scores.get_shape().as_list()[1]
         soft_weights = tf.expand_dims(tf.nn.softmax(pred_scores, axis=1), axis=2)  # bc*shot_num*1，计算对于每个concept的重要性权重
@@ -492,7 +449,7 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
     loss = pred_loss * hp.loss_pred_ratio + \
            shots_div_loss * hp.shots_div + \
            memory_div_loss * hp.mem_div
-    return loss, [pred_loss, shots_div_loss, memory_div_loss] + loss_list
+    return loss, [pred_loss, shots_div_loss, memory_div_loss]
 
 def average_gradients(tower_grads):
     average_grads = []

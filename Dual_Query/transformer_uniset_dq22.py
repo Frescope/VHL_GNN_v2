@@ -258,7 +258,7 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
         memory_output = enc_output[:, -hp.memory_num : ,]
 
         if hp.local_attention_pose == 'late':
-            scores_frame, scores_rem = tf.split(scores_src, [hp.shot_num, hp.segment_num + hp.query_num + hp.memory_num], axis=1)
+            scores_frame, scores_rem = tf.split(scores_src, [hp.shot_num*hp.shot_len, hp.segment_num + hp.query_num + hp.memory_num], axis=1)
             shot_output = local_attention(shot_output, tf.math.equal(scores_frame, 0), hp)  # bc*seqlen*D
 
         # visual branch
