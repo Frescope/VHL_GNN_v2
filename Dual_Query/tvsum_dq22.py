@@ -1,4 +1,6 @@
-# dual_query_v21 for Uniset
+# 将frame聚合为shot，使用shot-level的排序做测试
+# 注意padding：shot内部补充空白帧，序列内部补充空白shot，batch内部补充空白序列（仅限测试）
+# 前两种padding全部在构建序列时完成，注意padding标记对应到帧；空白序列使用循环填充实现，train和test一样。
 
 import os
 import time
@@ -15,14 +17,14 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_uniset_dq21 import transformer
+from transformer_uniset_dq22 import transformer
 from scipy import stats
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='1',type=str)
+    parser.add_argument('--gpu', default='2',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -32,22 +34,25 @@ class Path:
     parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-4, type=float)
     parser.add_argument('--warmup', default=6000, type=int)
-    parser.add_argument('--maxstep', default=12000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=200, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch', default=10, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
-    parser.add_argument('--run_mode', default='train', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
+    parser.add_argument('--run_mode', default='test', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
     parser.add_argument('--metrics', default='k_cor', type=str)  # p,r,f,k_cor,s_cor 选择一种主要的评价指标
 
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
+    parser.add_argument('--num_blocks_local', default=3, type=int)  # local attention的层数
+    parser.add_argument('--local_attention_pose', default='early', type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
-    parser.add_argument('--seq_len',default=10,type=int)  # 帧数量
+    parser.add_argument('--shot_num',default=10,type=int)  # 片段数量
+    parser.add_argument('--shot_len',default=15, type=int)  # 片段帧数
     parser.add_argument('--pos_ratio', default=0.50, type=float)  # positive sample ratio
 
     # score参数
@@ -58,7 +63,7 @@ class Path:
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # query-embedding参数
-    parser.add_argument('--query_num', default=38, type=int)  # query节点数量，对应三个数据集中的query总数
+    parser.add_argument('--query_num', default=10, type=int)  # query节点数量，对应三个数据集中的query总数
 
     # memory参数
     parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
@@ -108,12 +113,8 @@ logging.basicConfig(level=logging.INFO)
 def load_query(uniset_base):
     with open(uniset_base + 'tvsum_clip_text.pkl', 'rb') as file:
         tvsum = pickle.load(file)
-    with open(r'/data/linkang/Uniset/summe_clip_text.pkl', 'rb') as file:
-        summe = pickle.load(file)
-    with open(r'/data/linkang/Uniset/cosum_clip_text.pkl', 'rb') as file:
-        cosum = pickle.load(file)
     query_embedding = {}
-    for data in [tvsum, summe, cosum]:
+    for data in [tvsum]:
         for category in data:
             text = data[category]['text']
             embedding = data[category]['feature']
@@ -121,7 +122,7 @@ def load_query(uniset_base):
                 query_embedding[text] = embedding
     queries = list(query_embedding.keys())
     queries.sort()
-    return queries, query_embedding, tvsum, summe, cosum
+    return queries, query_embedding, tvsum
 
 def segment_embedding(feature):
     if hp.segment_num == 0:
@@ -161,47 +162,38 @@ def load_data(uniset_base):
         tvsum_score_record = json.load(file)
 
     # load text embeddings
-    queries, query_embedding, tvsum_dict, summe_dict, cosum_dict\
-        = load_query(uniset_base)  # 需要额外使用类型-文本映射关系
+    queries, query_embedding, tvsum_dict = load_query(uniset_base)  # 需要额外使用类型-文本映射关系
 
     # load features & organize data
     data = {}
-    for name in uniset_labels:
-        data[name] = {}
-        for vid in uniset_labels[name]:
-            data[name][vid] = {}
-            # feature
-            feature_path = uniset_base + name + '_clip_visual_2fps/%s_CLIP_2fps.npy' % vid
-            data[name][vid]['feature'] = np.load(feature_path)
-            # label
-            if name == 'cosum':
-                label_line = np.array(uniset_labels[name][vid]['dualplus'])
-            else:
-                label_line = np.array(uniset_labels[name][vid]['single_score'])  # or single_binary
-            if name == 'tvsum':
-                text = tvsum_dict[tvsum_score_record[vid]['category']]['text']  # 找出这一视频对应的query文本
-            elif name == 'summe':
-                text = summe_dict[vid]['text']
-            else:
-                text = cosum_dict[vid[:-1]]['text']  # 去掉编号部分
-            data[name][vid]['query_text'] = text
-            data[name][vid]['label'] = label_line.reshape((-1,))
-            # segment
-            if hp.segment_num == 0:
-                segments = np.zeros((0, D_VISUAL))
-                poses = np.zeros((0))
-            else:
-                segments, poses = segment_embedding(data[name][vid]['feature'])
-            data[name][vid]['segment_emb'] = segments
-            data[name][vid]['segment_pos'] = poses
-            logging.info('Dataset: ' + str(name) +
-                         ' Vid: ' + str(vid) +
-                         ' Feature: ' + str(data[name][vid]['feature'].shape) +
-                         ' Label: ' + str(data[name][vid]['label'].shape) +
-                         ' Segments: ' + str(segments.shape) +
-                         ' Poses: ' + str(poses.shape) +
-                         ' Query: ' + str(data[name][vid]['query_text'])
-                         )
+    name = 'tvsum'
+    data[name] = {}
+    for vid in uniset_labels[name]:
+        data[name][vid] = {}
+        # feature
+        feature_path = uniset_base + name + '_clip_visual_2fps/%s_CLIP_2fps.npy' % vid
+        data[name][vid]['feature'] = np.load(feature_path)
+        # label
+        label_line = np.array(uniset_labels[name][vid]['single_score'])  # or single_binary
+        text = tvsum_dict[tvsum_score_record[vid]['category']]['text']  # 找出这一视频对应的query文本
+        data[name][vid]['query_text'] = text
+        data[name][vid]['frame_label'] = label_line.reshape((-1,))
+        # segment
+        if hp.segment_num == 0:
+            segments = np.zeros((0, D_VISUAL))
+            poses = np.zeros((0))
+        else:
+            segments, poses = segment_embedding(data[name][vid]['feature'])
+        data[name][vid]['segment_emb'] = segments
+        data[name][vid]['segment_pos'] = poses
+        logging.info('Dataset: ' + str(name) +
+                     ' Vid: ' + str(vid) +
+                     ' Feature: ' + str(data[name][vid]['feature'].shape) +
+                     ' Label: ' + str(data[name][vid]['frame_label'].shape) +
+                     ' Segments: ' + str(segments.shape) +
+                     ' Poses: ' + str(poses.shape) +
+                     ' Query: ' + str(data[name][vid]['query_text'])
+                     )
 
     # split data
     # classify videos in tvsum
@@ -216,20 +208,10 @@ def load_data(uniset_base):
     tvsum_categories.sort()
     for c in tvsum_categories:
         tvsum_video_split[c].sort()
-    # classify videos in cosum
-    cosum_videos = [
-        ['base1', 'bike1', 'eiffel3', 'exca3', 'kids1', 'mlb1', 'nfl1', 'notre1', 'statue1'],
-        ['surf1', 'base2', 'bike2', 'eiffel4', 'kids2', 'mlb2', 'nfl2', 'notre2', 'statue2'],
-        ['surf2', 'base3', 'bike3', 'eiffel5', 'kids3', 'mlb4', 'nfl3', 'notre4', 'statue3'],
-        ['surf3', 'base4', 'bike4', 'eiffel7', 'kids4', 'mlb5', 'statue4', 'surf4'],
-        ['base5', 'bike5', 'kids5', 'kids6', 'mlb6', 'statue5', 'surf5', 'surf6']
-    ]
     # split in 5 parts
     K = 5
     data_split = {}
-    summe_videos = list(data['summe'].keys())
-    summe_videos.sort()
-    for i in range(5):
+    for i in range(K):
         data_split[i] = {}
         # tvsum
         temp_list = []
@@ -237,39 +219,52 @@ def load_data(uniset_base):
             temp_list.append(tvsum_video_split[tvsum_categories[j]].pop(0))  # 从各个类别的队首各取一个，保持顺序
         for vid in temp_list:
             data_split[i][vid] = data['tvsum'][vid]
-        # summe
-        summe_num = math.ceil(len(summe_videos) / K)
-        temp_list = summe_videos[i * summe_num : (i+1) * summe_num]
-        for vid in temp_list:
-            data_split[i][vid] = data['summe'][vid]
-        # cosum
-        for vid in cosum_videos[i]:
-            data_split[i][vid] = data['cosum'][vid]
 
     return data_split, uniset_labels, queries, query_embedding
 
 def train_scheme_build(data_train, hp):
-    # 对每个视频，围绕一个查询构建序列
-    # 序列长度不足的在getbatch中补足，对于短视频有可能出现序列长度大于视频的情况
+    # 首先对每个视频计算其片段总数
+    # 然后对每个序列挑选若干片段，维护一个列表，标记在每次scheme_build时一个片段是否被选中过，支持重复选择之前序列中用过的片段
+    # 对选中的片段，找出其对应的帧、位置及标签，并生成padding标记
+
     train_scheme = []
     for vid in data_train:
         vlength = len(data_train[vid]['feature'])
-        pos_list = list(np.where(data_train[vid]['label'] > 0)[0])
-        neg_list = list(set(list(range(vlength))) - set(pos_list))
-        pos_num = math.ceil(hp.seq_len * hp.pos_ratio)
-        k = math.ceil(len(pos_list) / pos_num)  # 取正例的循环次数，不足时从头循环
-        for i in range(k):
-            pos_ind = i * pos_num % len(pos_list)
-            neg_ind = i * (hp.seq_len - pos_num) % len(neg_list)
-            frame_list = pos_list[pos_ind: pos_ind + pos_num]
-            frame_list += neg_list[neg_ind: neg_ind + hp.seq_len - pos_num]
-            frame_list.sort()
-            train_scheme.append((vid, frame_list))
-    random.shuffle(train_scheme)
+        nums = math.ceil(vlength / hp.shot_len)  # 一个视频中的片段总数，取上整
+        if nums < hp.shot_num:  # 一个视频凑不齐一个序列
+            train_scheme.append((vid, list(range(nums))))
+            continue
+        seq_num = math.ceil(nums / hp.shot_num)  # 这一视频能组成的序列总数，取上整
+        shot_list = list(range(nums))  # 打乱片段顺序
+        random.shuffle(shot_list)
+
+        pos = 0
+        for i in range(seq_num - 1):  # 不需要padding的序列数量
+            seq = []
+            for _ in range(hp.shot_num):
+                seq.append(shot_list[pos])  # 随机弹出shotnum个片段构成一个序列
+                pos += 1
+            seq.sort()
+            train_scheme.append((vid, seq))  # 保存视频编号与片段编号
+
+        seq = shot_list[pos : ]
+        while len(seq) < hp.shot_num:  # 如果最后一个序列长度不足，重复挑选一些片段
+            seq.append(shot_list.pop(0))
+        seq.sort()
+        train_scheme.append((vid, seq))
+
     return train_scheme
 
 def get_batch_train(data_train, train_scheme, queries, step, hp):
-    # 从train_scheme中获取gpu_num*bc个序列，每个长度seq_len，并返回每个frame的全局位置
+    # 从train_scheme中获取gpu_num*bc个序列，每个长度shot_num，并返回每个frame的全局位置
+    def shot2frame(shot_list, vlength):
+        frame_list = []
+        for shot in shot_list:
+            st = shot*hp.shot_len
+            ed = min((shot+1)*hp.shot_len, vlength)
+            frame_list += list(range(st, ed))
+        return frame_list
+
     batch_num = hp.gpu_num * hp.bc
     features = []
     labels = []
@@ -277,15 +272,16 @@ def get_batch_train(data_train, train_scheme, queries, step, hp):
     segment_embs = []
     segment_poses = []
     indexes = []
-    scores = []
+    scores = []  # padding标记，对应到每一帧
     for i in range(batch_num):
         pos = (step * batch_num + i) % len(train_scheme)
-        vid, frame_list = train_scheme[pos]
+        vid, shot_list = train_scheme[pos]
         vlength = len(data_train[str(vid)]['feature'])
-        padding_len = hp.seq_len - len(frame_list)
+        frame_list = shot2frame(shot_list, vlength)
+        padding_len = hp.shot_num * hp.shot_len - len(frame_list)  # 输入的一个序列长度是不定的，需要计算待补充的空白帧数
 
         feature = data_train[vid]['feature'][frame_list]
-        label = data_train[vid]['label'][frame_list]
+        label = data_train[vid]['frame_label'][frame_list]
         position = frame_list
         score = np.ones((len(frame_list)))
         if padding_len > 0:
@@ -316,22 +312,20 @@ def get_batch_train(data_train, train_scheme, queries, step, hp):
     return features, positions, segment_embs, segment_poses, indexes, scores, labels
 
 def test_scheme_build(data_test, hp):
-    # 依次输入测试集中所有clip，不足seqlen的要补足，在getbatch中补足不够一个batch的部分
-    # (vid, seq_start, seq_end)形式
+    # 依次输入测试集中所有shot，不足shotnum的要补足，在getbatch中补足不够一个batch的部分
+    # (vid, seq_start, seq_end)形式，编号对应到帧
     test_scheme = []
     test_vids = []
+    frame_num = hp.shot_num * hp.shot_len  # 一个序列中所包含的帧数量
     for vid in data_test:
         vlength = len(data_test[str(vid)]['feature'])
-        seq_num = math.ceil(vlength / hp.seq_len)
+        seq_num = math.ceil(vlength / frame_num)
         for i in range(seq_num):
-            test_scheme.append((vid, i * hp.seq_len, min(vlength, (i + 1) * hp.seq_len)))
-        test_vids.append((vid, vlength))
+            test_scheme.append((vid, i * frame_num, min(vlength, (i + 1) * frame_num)))
+        test_vids.append((vid, math.ceil(vlength / hp.shot_len)))
     return test_scheme, test_vids
 
 def get_batch_test(data_test, test_scheme, queries, step, hp):
-    # 输入拼接后的测试数据集
-    # 标记每个序列中的有效长度，并对不足一个batch的部分做padding
-    # 不需要对序列水平上的padding做标记
     features = []
     positions = []
     segment_embs = []
@@ -343,7 +337,7 @@ def get_batch_test(data_test, test_scheme, queries, step, hp):
         pos = (step * batch_num + i) % len(test_scheme)
         vid, seq_start, seq_end = test_scheme[pos]
         vlength = len(data_test[str(vid)]['feature'])
-        padding_len = hp.seq_len - (seq_end - seq_start)
+        padding_len = hp.shot_num * hp.shot_len - (seq_end - seq_start)  # 每一个序列中需要填充的空白帧数
         feature = data_test[str(vid)]['feature'][seq_start:seq_end]
         position = np.array(list(range(seq_start, seq_end)))
         indexes.append(queries.index(data_test[vid]['query_text']))
@@ -381,9 +375,9 @@ def _variable_with_weight_decay(name, shape, wd):
     return var
 
 def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
-    # pred_scores: dual_query_scores, bc*seq_len
-    # pred_labels: bc*seq_len
-    # shots_output: bc*seq_len*D
+    # pred_scores: dual_query_scores, bc*shotnum
+    # pred_labels: bc*shot_num
+    # shots_output: bc*shot_num*D （或是frame-level的输出，由聚合位置决定）
     # memory_output: bc*memory_num*D
     # 对pred_loss，计算每一帧在其视频对应的query上的NCE-Loss
     # 计算shots与memory的diversity-loss，pred_loss加权求和
@@ -402,6 +396,8 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
         similarity = tf.reduce_sum(similarity, axis=1, keepdims=True) - (1 / (1 + 1e-8) + 1)  # bc*1*N，每个元素与其他所有元素的相似度之和
         return similarity
 
+    # def ranking_loss(score_list):
+    #     # 输入一组序列，每个序列都从大到小排列，输出其
     # for pred，与分解到concept的query-summary label
     # labels_bin = tf.cast(tf.cast(pred_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
     #
@@ -414,16 +410,16 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
     # ranking-loss ListMLE
     pred_scores_sort = []
     for i in range(hp.bc):
-        indices = tf.nn.top_k(pred_labels[i], k=hp.seq_len).indices
-        pred_scores_sort.append(tf.gather(pred_scores[i], indices))  # 排序后, bc*seqlen
+        indices = tf.nn.top_k(pred_labels[i], k=hp.shot_num).indices
+        pred_scores_sort.append(tf.gather(pred_scores[i], indices))  # 排序后, bc*shotnum
     scores_sums = tf.reduce_sum(pred_scores, axis=1)
     pred_loss = 0
     loss_list = []
     for i in range(hp.bc):
         sum_temp = scores_sums[i]
         loss_temp = 1
-        for j in range(hp.seq_len):
-            item = pred_scores_sort[i][j] / sum_temp  # 当前要乘的一项
+        for j in range(hp.shot_num):
+            item = pred_scores_sort[i][j] / (sum_temp + 1e-6)  # 当前要乘的一项
             loss_temp *= item
             sum_temp -= pred_scores_sort[i][j]  # 更新分母
         pred_loss += -tf.log(loss_temp)
@@ -432,10 +428,11 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
 
     # shots多样性
     if hp.shots_div >= 0.05:
-        soft_weights = tf.expand_dims(tf.nn.softmax(pred_scores, axis=1), axis=2)  # bc*seq_len*1，计算对于每个concept的重要性权重
-        shots_similiarity = cosine_similarity(shots_output)  # bc*1*seq_len，计算每个片段特征对其他所有片段特征的相似度
+        length = pred_scores.get_shape().as_list()[1]
+        soft_weights = tf.expand_dims(tf.nn.softmax(pred_scores, axis=1), axis=2)  # bc*shot_num*1，计算对于每个concept的重要性权重
+        shots_similiarity = cosine_similarity(shots_output)  # bc*1*shot_num，计算每个片段特征对其他所有片段特征的相似度
         shots_similiarity = tf.matmul(shots_similiarity, soft_weights)  # bc*1*1，相似度加权求和
-        shots_div_loss = tf.reduce_mean(shots_similiarity / hp.seq_len / (hp.seq_len - 1))  # 对所有concept的相似度损失求和，再对所有序列求平均
+        shots_div_loss = tf.reduce_mean(shots_similiarity / length / (length - 1))  # 对所有concept的相似度损失求和，再对所有序列求平均
     else:
         shots_div_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
@@ -450,7 +447,7 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
     loss = pred_loss * hp.loss_pred_ratio + \
            shots_div_loss * hp.shots_div + \
            memory_div_loss * hp.mem_div
-    return loss, [pred_loss, shots_div_loss, memory_div_loss] + loss_list
+    return loss, [pred_loss, shots_div_loss, memory_div_loss]
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -466,21 +463,34 @@ def average_gradients(tower_grads):
         average_grads.append(grad_and_var)
     return average_grads
 
-def evaluation(pred_scores, test_videos, uniset_labels):
+def evaluation(pred_scores, test_videos, uniset_labels, hp):
+    def frame2shot(labels):
+        # 将帧标签变成片段标签，标签为N*vlength形式
+        N = len(labels)
+        vlength = len(labels[0])
+        nums = math.floor(vlength / hp.shot_len)  # 视频中的片段数，取下整
+        labels_shot = labels[:, : nums*hp.shot_len]
+        labels_rem = labels[:, nums*hp.shot_len:]  # 切掉最后不足一个片段的几帧
+        labels_shot = labels_shot.reshape((N, nums, hp.shot_len))
+        labels_shot = np.mean(labels_shot, axis=2)  # N*nums
+        if len(labels_rem[0]) > 0:
+            labels_rem = np.mean(labels_rem, axis=1, keepdims=True)  # N*1（或N*0）
+        else:
+            labels_rem = np.zeros((N, 0))
+        labels_new = np.concatenate([labels_shot, labels_rem],axis=1)  # N*(nums+1)
+        return labels_new
+
     def compute(preds, vid, uniset_labels):
         # 计算某个视频的f1值与ranking指标
-        for name in uniset_labels:
-            if vid in uniset_labels[name]:
-                if name == 'cosum':
-                    binary_labels = [uniset_labels[name][vid]['dualplus']]
-                    ranking_labels = [uniset_labels[name][vid]['dualplus']]
-                else:
-                    # binary_labels = uniset_labels[name][vid]['multi_binary']
-                    # ranking_labels = uniset_labels[name][vid]['multi_score']
-                    binary_labels = uniset_labels[name][vid]['single_binary']
-                    ranking_labels = uniset_labels[name][vid]['single_score']
-                data_name = name
-                break
+        # binary_labels = uniset_labels['tvsum'][vid]['multi_binary']
+        ranking_labels = np.array(uniset_labels['tvsum'][vid]['multi_score'])
+        # binary_labels = np.array(uniset_labels['tvsum'][vid]['single_binary'])
+        # ranking_labels = uniset_labels['tvsum'][vid]['single_score']
+
+        # frame2shot
+        ranking_labels = frame2shot(ranking_labels)
+        # binary_labels = frame2shot(binary_labels)
+
         # for f1
         hlnum = math.ceil(len(preds) * 0.15)
         preds_list = list(preds)
@@ -491,13 +501,13 @@ def evaluation(pred_scores, test_videos, uniset_labels):
             if preds[i] > threshold and np.sum(labels_pred) < hlnum:
                 labels_pred[i] = 1
         p = r = f = 0  # 计算多标签的结果求均值
-        for label in binary_labels:
-            p += accuracy_score(label, labels_pred)
-            r += recall_score(label, labels_pred)
-            f += f1_score(label, labels_pred)
-        p /= len(binary_labels)
-        r /= len(binary_labels)
-        f /= len(binary_labels)
+        # for label in ranking_labels:
+        #     p += precision_score(label, labels_pred)
+        #     r += recall_score(label, labels_pred)
+        #     f += f1_score(label, labels_pred)
+        # p /= len(ranking_labels)
+        # r /= len(ranking_labels)
+        # f /= len(ranking_labels)
         # for ranking
         k_cor = 0
         s_cor = 0
@@ -508,7 +518,7 @@ def evaluation(pred_scores, test_videos, uniset_labels):
             s_cor += s_cor_tmp
         k_cor /= len(ranking_labels)
         s_cor /= len(ranking_labels)
-        return p, r, f, k_cor, s_cor, data_name
+        return p, r, f, k_cor, s_cor
 
     # 首先将模型输出裁剪为对每个视频中的帧得分预测
     preds_c = list(pred_scores[0])
@@ -518,43 +528,26 @@ def evaluation(pred_scores, test_videos, uniset_labels):
     # 计算F1与相关性系数，并按照数据集分别归类
     pos = 0
     results = {
-        'tvsum': {}, 'summe': {}, 'cosum': {}
-    }
-    for name in results:
-        results[name] = {
-            'p': [], 'r': [], 'f': [], 'k_cor': [], 's_cor': []
-        }
-    for vid, vlength in test_videos:
-        y_pred = np.array(preds_c[pos:pos + vlength])  # vlength
-        padlen = (hp.seq_len - vlength % hp.seq_len) % hp.seq_len  # 当vlength是seq_len的整数倍时，不需要padding
-        pos += vlength + padlen  # 跳过padding部分
-        p, r, f, k_cor, s_cor, name = compute(y_pred, vid, uniset_labels)
-        results[name]['p'].append(p)
-        results[name]['r'].append(r)
-        results[name]['f'].append(f)
-        results[name]['k_cor'].append(k_cor)
-        results[name]['s_cor'].append(s_cor)
-
-    # output
-    total_results = {
         'p': [], 'r': [], 'f': [], 'k_cor': [], 's_cor': []
     }
-    for name in results:
-        for key in results[name]:
-            total_results[key] += results[name][key]
-            results[name][key] = sum(results[name][key]) / len(results[name][key])
-    for key in total_results:
-        total_results[key] = sum(total_results[key]) / len(total_results[key])
-    r = results['tvsum']
-    logging.info('TVSum F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
-    r = results['summe']
-    logging.info('SumMe F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
-    r = results['cosum']
-    logging.info('CoSum F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
-    r = total_results
-    logging.info('Total F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
+    for vid, num in test_videos:
+        y_pred = np.array(preds_c[pos:pos + num])
+        padlen = (hp.shot_num - num % hp.shot_num) % hp.shot_num  # 当vlength是seq_len的整数倍时，不需要padding
+        pos += num + padlen  # 跳过padding部分
+        p, r, f, k_cor, s_cor = compute(y_pred, vid, uniset_labels)
+        results['p'].append(p)
+        results['r'].append(r)
+        results['f'].append(f)
+        results['k_cor'].append(k_cor)
+        results['s_cor'].append(s_cor)
 
-    return total_results
+    # output
+    for key in results:
+        results[key] = sum(results[key]) / len(results[key])
+    logging.info('TVSum F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' %
+                 (results['p'], results['r'], results['f'], results['k_cor'], results['s_cor']))
+
+    return results
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
@@ -598,16 +591,16 @@ def running(data_train, data_test, uniset_labels, queries, query_embedding, test
     with tf.Graph().as_default():
         global_step = tf.train.get_or_create_global_step()
         # placeholders
-        features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, D_VISUAL))
-        positions_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
+        features_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.shot_num*hp.shot_len, D_VISUAL))
+        positions_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.shot_num*hp.shot_len))
         segment_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.segment_num, D_VISUAL))
         segment_poses_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.segment_num))
         query_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.query_num, D_QUERY))
         indexes_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, ))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num,
-                                                              hp.seq_len + hp.segment_num + hp.query_num + hp.memory_num
+                                                              hp.shot_num*hp.shot_len + hp.segment_num + hp.query_num + hp.memory_num
                                                               ))
-        pred_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len))
+        pred_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.shot_num*hp.shot_len))
         dropout_holder = tf.placeholder(tf.float32, shape=())
         training_holder = tf.placeholder(tf.bool, shape=())
 
@@ -653,6 +646,7 @@ def running(data_train, data_test, uniset_labels, queries, query_embedding, test
                                                                                    indexes,
                                                                                    scores_src, dropout_holder,
                                                                                    training_holder, hp)
+                pred_labels = tf.reduce_mean(tf.reshape(pred_labels, shape=[hp.bc, hp.shot_num, hp.shot_len]), axis=2)  # bc*shotnum
                 pred_scores_list.append(pred_scores)
 
                 loss, loss_ob = tower_loss(pred_scores, pred_labels, shot_output, memory_output, hp)
@@ -757,7 +751,7 @@ def running(data_train, data_test, uniset_labels, queries, query_embedding, test
                     for preds in temp_list:
                         pred_s1_lists.append(preds.reshape((-1,)))
 
-                results = evaluation(pred_s1_lists, test_vids, uniset_labels)
+                results = evaluation(pred_s1_lists, test_vids, uniset_labels, hp)
                 # logging.info('Precision: %.3f, Recall: %.3f, F1: %.3f, K_cor: %.3f, S_cor: %.3f' %
                 #              (results['p'], results['r'], results['f'], results['k_cor'], results['s_cor']))
 
@@ -813,7 +807,8 @@ def main(self):
         logging.info('Batchsize: ' + str(hp.bc))
         logging.info('Max Steps: ' + str(hp.maxstep))
         logging.info('Dropout Rate: ' + str(hp.dropout))
-        logging.info('Sequence Length: ' + str(hp.seq_len))
+        logging.info('Shot Number: ' + str(hp.shot_num))
+        logging.info('Shot Length: ' + str(hp.shot_len))
         logging.info('Evaluation Epoch: ' + str(hp.eval_epoch))
         logging.info('Auxiliary Score Ratio: ' + str(hp.aux_pr))
         logging.info('Segment Nodes Number: ' + str(hp.segment_num))
@@ -866,49 +861,16 @@ def main(self):
                 model_path = models_to_restore[i]
                 value = running(data_train, data_test, uniset_labels, queries, query_embedding, 1, model_save_dir, model_path)
                 scores.append(value)
-        model_scores[str((kfold + 3) % 4 + 1)] = scores
+        model_scores[kfold] = scores
     scores_all = 0
-    for vid in model_scores:
-        scores = model_scores[vid]
+    for kfold in model_scores:
+        scores = model_scores[kfold]
         logging.info('Vid: %s, Mean: %.3f, Scores: %s' %
-                     (vid, np.array(scores).mean(), str(scores)))
+                     (kfold, np.array(scores).mean(), str(scores)))
         scores_all += np.array(scores).mean()
-    logging.info('Overall Results: %.3f' % (scores_all / 4))
+    logging.info('Overall Results: %.3f' % (scores_all / len(model_scores)))
 
 if __name__ == '__main__':
     tf.app.run()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

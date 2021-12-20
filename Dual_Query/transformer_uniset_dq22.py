@@ -1,6 +1,4 @@
-# 使用attention结构作为预测函数
-# 序列中包括片段、文本、segment、memory四种节点
-# 输出时选择与query相关的部分
+# 加入帧聚合模块
 
 import tensorflow as tf
 import numpy as np
@@ -179,40 +177,48 @@ def encoder(input_nodes, src_masks, drop_out, training, hp):
 
         return memory
 
-def local_attention(frame_embs, hp):
+def local_attention(frame_embs, scores_frame, hp):
     # 在每个shot内部，使用self-attention将输出的frame表征聚合为shot表征
-    # frame_output: N*(seqlen*5)*D
-    # shot_embs: N*seqlen*D
+    # frame_output: N*(shotnum*shotlen)*D
+    # scores_frame: N*(shotnum*shotlen)，对应实际帧的位置为1，所有padding位置为0
+    # shot_embs: N*shotnum*D
 
     # 添加CLS位
     d_model = frame_embs.get_shape().as_list()[-1]
-    frame_embs = tf.concat(tf.split(frame_embs, hp.seq_len, axis=1), axis=0)  # (seqlen*N)*5*D
-    cls_embs = tf.get_variable(name='cls_emb', shape=[hp.seq_len*hp.gpu_num*hp.bc, 1, d_model])  # (seqlen*N)*1*D
-    frame_embs = tf.concat([cls_embs, frame_embs], axis=1)  # (seqlen*N)*6*D
+    frame_embs = tf.concat(tf.split(frame_embs, hp.shot_num, axis=1), axis=0)  # (shotnum*N)*shotlen*D
+    scores_frame = tf.concat(tf.split(scores_frame, hp.shot_num, axis=1), axis=0)  # (shotnum*N)*shotlen
+    scores_cls = tf.convert_to_tensor(np.zeros((hp.shot_num*hp.bc, 1)).astype('bool'))  # (shotnum*N)*1
+    cls_embs = tf.get_variable(name='cls_emb', shape=[hp.shot_num*hp.bc, 1, d_model])  # (shotnum*N)*1*D
+
+    frame_position = tf.tile(tf.expand_dims(tf.range(hp.shot_len), 0), [hp.shot_num*hp.bc, 1])
+    frame_embs += positional_encoding(frame_embs, frame_position, scope='local_positional_encoding')  # 为每帧加上片段内部的相对位置编码
+    frame_embs = tf.concat([cls_embs, frame_embs], axis=1)  # (shotnum*N)*(shotlen+1)*D
+    scores_frame = tf.concat([scores_cls, scores_frame], axis=1)  # (shotnum*N)*(shotlen+1)*D
     enc = frame_embs
 
     for i in range(hp.num_blocks_local):
         with tf.variable_scope("num_blocks_local_{}".format(i), reuse=tf.AUTO_REUSE):
-            Q = tf.layers.dense(enc, d_model, use_bias=True)  # (seqlen*N)*6*D
+            Q = tf.layers.dense(enc, d_model, use_bias=True)  # (shotnum*N)*shotlen*D
             K = tf.layers.dense(enc, d_model, use_bias=True)
             V = tf.layers.dense(enc, d_model, use_bias=True)
-            Q_ = tf.concat(tf.split(Q, hp.num_heads, axis=2), axis=0)  # (h*seqlen*N)*6*(D/h)，先按照head数目切分特征
+            Q_ = tf.concat(tf.split(Q, hp.num_heads, axis=2), axis=0)  # (h*shotnum*N)*shotlen*(D/h)，先按照head数目切分特征
             K_ = tf.concat(tf.split(K, hp.num_heads, axis=2), axis=0)
             V_ = tf.concat(tf.split(V, hp.num_heads, axis=2), axis=0)
 
             # attention
-            attention = tf.matmul(Q_, tf.transpose(K_, [0, 2, 1]))  # (seqlen*h*N)*6*6
+            attention = tf.matmul(Q_, tf.transpose(K_, [0, 2, 1]))  # (h*shotnum*N)*shotlen*shotlen
             attention /= d_model ** 0.5
+            attention = mask(attention, key_masks=scores_frame, type='key')
             attention = tf.nn.softmax(attention)
-            outputs_ = tf.matmul(attention, V_)  # (h*seqlen*N)*6*(D/h)
-            outputs = tf.concat(tf.split(outputs_, hp.num_heads, axis=0), axis=2)  # (seqlen*N)*6*D，还原各个head
+            outputs_ = tf.matmul(attention, V_)  # (h*shotnum*N)*shotlen*(D/h)
+            outputs = tf.concat(tf.split(outputs_, hp.num_heads, axis=0), axis=2)  # (shotnum*N)*shotlen*D，还原各个head
             outputs = tf.layers.dense(outputs, d_model, use_bias=False, activation=None)
             outputs += enc
             outputs = ln(outputs)
             enc = ff(outputs, num_units=[D_FF, D_MODEL], dropout_rate=0)
 
-    shot_embs = enc[:, 0:1, :]  # (seqlen*N)*1*D
-    shot_embs = tf.concat(tf.split(shot_embs, hp.seq_len, axis=0), axis=1)  # N*seqlen*D
+    shot_embs = enc[:, 0:1, :]  # (shotnum*N)*1*D
+    shot_embs = tf.concat(tf.split(shot_embs, hp.shot_num, axis=0), axis=1)  # N*shotnum*D
     return shot_embs
 
 def transformer(img_embs, segment_embs, txt_embs, memory_embs,
@@ -220,13 +226,25 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
                 scores_src, drop_out, training, hp):
     with tf.variable_scope("transformer", reuse=tf.AUTO_REUSE):
         # encoder & decoder inputs
-        visual_nodes = tf.layers.dense(img_embs, D_MODEL, use_bias=True, activation=None)
-        segment_nodes = tf.layers.dense(segment_embs, D_MODEL, use_bias=True, activation=None)
-        query_nodes = tf.layers.dense(txt_embs, D_MODEL, use_bias=True, activation=None)
-        memory_nodes = tf.layers.dense(memory_embs, D_MODEL, use_bias=True, activation=None)
+        visual_nodes = tf.layers.dense(img_embs, D_MODEL, name='v', use_bias=True, activation=None)
+        segment_nodes = tf.layers.dense(segment_embs, D_MODEL, name='s',  use_bias=True, activation=None)
+        query_nodes = tf.layers.dense(txt_embs, D_MODEL, name='q',  use_bias=True, activation=None)
+        memory_nodes = tf.layers.dense(memory_embs, D_MODEL, name='m',  use_bias=True, activation=None)
 
         visual_nodes += positional_encoding(visual_nodes, feature_positions)
         segment_nodes += positional_encoding(segment_nodes, segment_positions)
+
+        # early local attention
+        FNUM = hp.shot_len
+        if hp.local_attention_pose == 'early':
+            scores_frame, scores_rem = tf.split(scores_src,
+                                                [hp.shot_num*FNUM, hp.segment_num+hp.query_num+hp.memory_num],
+                                                axis=1)
+            visual_nodes = local_attention(visual_nodes, tf.math.equal(scores_frame, 0), hp)
+            scores_frame = tf.reshape(scores_frame, [hp.bc, hp.shot_num, FNUM])
+            scores_frame = tf.reduce_mean(scores_frame, axis=2)  # 收缩scores mask到shot水平
+            scores_src = tf.concat([scores_frame, scores_rem], axis=1)
+            FNUM = 1  # 后续每个shot只有一个特征
 
         input_nodes = [visual_nodes, segment_nodes, query_nodes, memory_nodes]
         input_nodes = segment_embedding(input_nodes, hp)
@@ -235,14 +253,18 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
 
         # encoding & decoding
         enc_output = encoder(input_nodes, src_masks, drop_out, training, hp)
-        shot_output= enc_output[: , 0 : hp.seq_len, :]
+        shot_output= enc_output[: , 0 : hp.shot_num * FNUM, :]
         query_output = enc_output[:, -(hp.memory_num+hp.query_num) : -hp.memory_num, :]
         memory_output = enc_output[:, -hp.memory_num : ,]
+
+        if hp.local_attention_pose == 'late':
+            scores_frame, scores_rem = tf.split(scores_src, [hp.shot_num, hp.segment_num + hp.query_num + hp.memory_num], axis=1)
+            shot_output = local_attention(shot_output, tf.math.equal(scores_frame, 0), hp)  # bc*seqlen*D
 
         # visual branch
         visual_branch = tf.layers.dense(shot_output, 1024, use_bias=True, activation=tf.nn.relu)
         visual_branch = tf.layers.dense(visual_branch, 512, use_bias=True, activation=tf.nn.relu)
-        visual_branch = tf.layers.dense(visual_branch, 256, use_bias=True, activation=tf.nn.relu)
+        visual_branch = tf.layers.dense(visual_branch, 256, use_bias=True, activation=None)
 
         # # query branch
         # query_branch = tf.layers.dense(query_output, 1024, use_bias=True, activation=tf.nn.relu)
@@ -254,14 +276,6 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
         # sigmoid_score = tf.sigmoid(corr_mat)  # 对每个query，计算所有片段的相关性，片段间不影响
         # softmax_logits = tf.nn.softmax(corr_mat, axis=1)  # 对每个片段，计算其与所有query的相关性，首先对片段做归一化
         # aux_score = tf.nn.softmax(tf.reduce_sum(softmax_logits, axis=2, keepdims=True), axis=1)  # 附加得分，对应到每个片段
-        # pred_matrix = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score  # bc*seqlen*q_num
-        #
-        # # 选取与query相关的部分
-        # pred_scores = []
-        # for i in range(hp.bc):
-        #     ind = indexes[i]
-        #     pred_scores.append(pred_matrix[i : i + 1, :, ind])
-        # pred_scores = tf.concat(pred_scores, axis=0)  # bc*seqlen
 
         visual_branch = tf.layers.dense(visual_branch, 64, use_bias=True, activation=tf.nn.relu)
         visual_branch = tf.layers.dense(visual_branch, 1, use_bias=True, activation=None)

@@ -1,4 +1,4 @@
-# dual_query_v21 for Uniset
+# dual_query_v21 for tvsum
 
 import os
 import time
@@ -30,12 +30,12 @@ class Path:
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default=0.1,type=float)
-    parser.add_argument('--lr_noam', default=1e-4, type=float)
-    parser.add_argument('--warmup', default=6000, type=int)
-    parser.add_argument('--maxstep', default=12000, type=int)
+    parser.add_argument('--lr_noam', default=5e-5, type=float)
+    parser.add_argument('--warmup', default=1500, type=int)
+    parser.add_argument('--maxstep', default=9000, type=int)
     parser.add_argument('--repeat', default=3, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=10, type=int)
+    parser.add_argument('--eval_epoch', default=3, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
@@ -58,7 +58,7 @@ class Path:
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # query-embedding参数
-    parser.add_argument('--query_num', default=38, type=int)  # query节点数量，对应三个数据集中的query总数
+    parser.add_argument('--query_num', default=10, type=int)  # query节点数量，对应三个数据集中的query总数
 
     # memory参数
     parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
@@ -108,12 +108,8 @@ logging.basicConfig(level=logging.INFO)
 def load_query(uniset_base):
     with open(uniset_base + 'tvsum_clip_text.pkl', 'rb') as file:
         tvsum = pickle.load(file)
-    with open(r'/data/linkang/Uniset/summe_clip_text.pkl', 'rb') as file:
-        summe = pickle.load(file)
-    with open(r'/data/linkang/Uniset/cosum_clip_text.pkl', 'rb') as file:
-        cosum = pickle.load(file)
     query_embedding = {}
-    for data in [tvsum, summe, cosum]:
+    for data in [tvsum]:
         for category in data:
             text = data[category]['text']
             embedding = data[category]['feature']
@@ -121,7 +117,7 @@ def load_query(uniset_base):
                 query_embedding[text] = embedding
     queries = list(query_embedding.keys())
     queries.sort()
-    return queries, query_embedding, tvsum, summe, cosum
+    return queries, query_embedding, tvsum
 
 def segment_embedding(feature):
     if hp.segment_num == 0:
@@ -161,47 +157,38 @@ def load_data(uniset_base):
         tvsum_score_record = json.load(file)
 
     # load text embeddings
-    queries, query_embedding, tvsum_dict, summe_dict, cosum_dict\
-        = load_query(uniset_base)  # 需要额外使用类型-文本映射关系
+    queries, query_embedding, tvsum_dict = load_query(uniset_base)  # 需要额外使用类型-文本映射关系
 
     # load features & organize data
     data = {}
-    for name in uniset_labels:
-        data[name] = {}
-        for vid in uniset_labels[name]:
-            data[name][vid] = {}
-            # feature
-            feature_path = uniset_base + name + '_clip_visual_2fps/%s_CLIP_2fps.npy' % vid
-            data[name][vid]['feature'] = np.load(feature_path)
-            # label
-            if name == 'cosum':
-                label_line = np.array(uniset_labels[name][vid]['dualplus'])
-            else:
-                label_line = np.array(uniset_labels[name][vid]['single_score'])  # or single_binary
-            if name == 'tvsum':
-                text = tvsum_dict[tvsum_score_record[vid]['category']]['text']  # 找出这一视频对应的query文本
-            elif name == 'summe':
-                text = summe_dict[vid]['text']
-            else:
-                text = cosum_dict[vid[:-1]]['text']  # 去掉编号部分
-            data[name][vid]['query_text'] = text
-            data[name][vid]['label'] = label_line.reshape((-1,))
-            # segment
-            if hp.segment_num == 0:
-                segments = np.zeros((0, D_VISUAL))
-                poses = np.zeros((0))
-            else:
-                segments, poses = segment_embedding(data[name][vid]['feature'])
-            data[name][vid]['segment_emb'] = segments
-            data[name][vid]['segment_pos'] = poses
-            logging.info('Dataset: ' + str(name) +
-                         ' Vid: ' + str(vid) +
-                         ' Feature: ' + str(data[name][vid]['feature'].shape) +
-                         ' Label: ' + str(data[name][vid]['label'].shape) +
-                         ' Segments: ' + str(segments.shape) +
-                         ' Poses: ' + str(poses.shape) +
-                         ' Query: ' + str(data[name][vid]['query_text'])
-                         )
+    name = 'tvsum'
+    data[name] = {}
+    for vid in uniset_labels[name]:
+        data[name][vid] = {}
+        # feature
+        feature_path = uniset_base + name + '_clip_visual_2fps/%s_CLIP_2fps.npy' % vid
+        data[name][vid]['feature'] = np.load(feature_path)
+        # label
+        label_line = np.array(uniset_labels[name][vid]['single_score'])  # or single_binary
+        text = tvsum_dict[tvsum_score_record[vid]['category']]['text']  # 找出这一视频对应的query文本
+        data[name][vid]['query_text'] = text
+        data[name][vid]['label'] = label_line.reshape((-1,))
+        # segment
+        if hp.segment_num == 0:
+            segments = np.zeros((0, D_VISUAL))
+            poses = np.zeros((0))
+        else:
+            segments, poses = segment_embedding(data[name][vid]['feature'])
+        data[name][vid]['segment_emb'] = segments
+        data[name][vid]['segment_pos'] = poses
+        logging.info('Dataset: ' + str(name) +
+                     ' Vid: ' + str(vid) +
+                     ' Feature: ' + str(data[name][vid]['feature'].shape) +
+                     ' Label: ' + str(data[name][vid]['label'].shape) +
+                     ' Segments: ' + str(segments.shape) +
+                     ' Poses: ' + str(poses.shape) +
+                     ' Query: ' + str(data[name][vid]['query_text'])
+                     )
 
     # split data
     # classify videos in tvsum
@@ -216,19 +203,9 @@ def load_data(uniset_base):
     tvsum_categories.sort()
     for c in tvsum_categories:
         tvsum_video_split[c].sort()
-    # classify videos in cosum
-    cosum_videos = [
-        ['base1', 'bike1', 'eiffel3', 'exca3', 'kids1', 'mlb1', 'nfl1', 'notre1', 'statue1'],
-        ['surf1', 'base2', 'bike2', 'eiffel4', 'kids2', 'mlb2', 'nfl2', 'notre2', 'statue2'],
-        ['surf2', 'base3', 'bike3', 'eiffel5', 'kids3', 'mlb4', 'nfl3', 'notre4', 'statue3'],
-        ['surf3', 'base4', 'bike4', 'eiffel7', 'kids4', 'mlb5', 'statue4', 'surf4'],
-        ['base5', 'bike5', 'kids5', 'kids6', 'mlb6', 'statue5', 'surf5', 'surf6']
-    ]
     # split in 5 parts
     K = 5
     data_split = {}
-    summe_videos = list(data['summe'].keys())
-    summe_videos.sort()
     for i in range(5):
         data_split[i] = {}
         # tvsum
@@ -237,14 +214,6 @@ def load_data(uniset_base):
             temp_list.append(tvsum_video_split[tvsum_categories[j]].pop(0))  # 从各个类别的队首各取一个，保持顺序
         for vid in temp_list:
             data_split[i][vid] = data['tvsum'][vid]
-        # summe
-        summe_num = math.ceil(len(summe_videos) / K)
-        temp_list = summe_videos[i * summe_num : (i+1) * summe_num]
-        for vid in temp_list:
-            data_split[i][vid] = data['summe'][vid]
-        # cosum
-        for vid in cosum_videos[i]:
-            data_split[i][vid] = data['cosum'][vid]
 
     return data_split, uniset_labels, queries, query_embedding
 
@@ -402,6 +371,8 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
         similarity = tf.reduce_sum(similarity, axis=1, keepdims=True) - (1 / (1 + 1e-8) + 1)  # bc*1*N，每个元素与其他所有元素的相似度之和
         return similarity
 
+    # def ranking_loss(score_list):
+    #     # 输入一组序列，每个序列都从大到小排列，输出其
     # for pred，与分解到concept的query-summary label
     # labels_bin = tf.cast(tf.cast(pred_labels, dtype=tf.bool), dtype=tf.float32)  # 转化为0-1形式，浮点数
     #
@@ -423,7 +394,7 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
         sum_temp = scores_sums[i]
         loss_temp = 1
         for j in range(hp.seq_len):
-            item = pred_scores_sort[i][j] / sum_temp  # 当前要乘的一项
+            item = pred_scores_sort[i][j] / (sum_temp + 1e-6)  # 当前要乘的一项
             loss_temp *= item
             sum_temp -= pred_scores_sort[i][j]  # 更新分母
         pred_loss += -tf.log(loss_temp)
@@ -450,7 +421,7 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
     loss = pred_loss * hp.loss_pred_ratio + \
            shots_div_loss * hp.shots_div + \
            memory_div_loss * hp.mem_div
-    return loss, [pred_loss, shots_div_loss, memory_div_loss] + loss_list
+    return loss, [pred_loss, shots_div_loss, memory_div_loss]
 
 def average_gradients(tower_grads):
     average_grads = []
@@ -467,20 +438,14 @@ def average_gradients(tower_grads):
     return average_grads
 
 def evaluation(pred_scores, test_videos, uniset_labels):
+    with open(r'/data/linkang/Uniset/labels_raw/tvsum_score_record.json', 'r') as file:
+        tvsum_score_record = json.load(file)
     def compute(preds, vid, uniset_labels):
         # 计算某个视频的f1值与ranking指标
-        for name in uniset_labels:
-            if vid in uniset_labels[name]:
-                if name == 'cosum':
-                    binary_labels = [uniset_labels[name][vid]['dualplus']]
-                    ranking_labels = [uniset_labels[name][vid]['dualplus']]
-                else:
-                    # binary_labels = uniset_labels[name][vid]['multi_binary']
-                    # ranking_labels = uniset_labels[name][vid]['multi_score']
-                    binary_labels = uniset_labels[name][vid]['single_binary']
-                    ranking_labels = uniset_labels[name][vid]['single_score']
-                data_name = name
-                break
+        # binary_labels = uniset_labels['tvsum'][vid]['multi_binary']
+        ranking_labels = np.array(uniset_labels['tvsum'][vid]['multi_score'])
+        binary_labels = np.array(uniset_labels['tvsum'][vid]['single_binary'])
+        # ranking_labels = uniset_labels['tvsum'][vid]['single_score']
         # for f1
         hlnum = math.ceil(len(preds) * 0.15)
         preds_list = list(preds)
@@ -508,7 +473,7 @@ def evaluation(pred_scores, test_videos, uniset_labels):
             s_cor += s_cor_tmp
         k_cor /= len(ranking_labels)
         s_cor /= len(ranking_labels)
-        return p, r, f, k_cor, s_cor, data_name
+        return p, r, f, k_cor, s_cor
 
     # 首先将模型输出裁剪为对每个视频中的帧得分预测
     preds_c = list(pred_scores[0])
@@ -518,43 +483,26 @@ def evaluation(pred_scores, test_videos, uniset_labels):
     # 计算F1与相关性系数，并按照数据集分别归类
     pos = 0
     results = {
-        'tvsum': {}, 'summe': {}, 'cosum': {}
+        'p': [], 'r': [], 'f': [], 'k_cor': [], 's_cor': []
     }
-    for name in results:
-        results[name] = {
-            'p': [], 'r': [], 'f': [], 'k_cor': [], 's_cor': []
-        }
     for vid, vlength in test_videos:
         y_pred = np.array(preds_c[pos:pos + vlength])  # vlength
         padlen = (hp.seq_len - vlength % hp.seq_len) % hp.seq_len  # 当vlength是seq_len的整数倍时，不需要padding
         pos += vlength + padlen  # 跳过padding部分
-        p, r, f, k_cor, s_cor, name = compute(y_pred, vid, uniset_labels)
-        results[name]['p'].append(p)
-        results[name]['r'].append(r)
-        results[name]['f'].append(f)
-        results[name]['k_cor'].append(k_cor)
-        results[name]['s_cor'].append(s_cor)
+        p, r, f, k_cor, s_cor = compute(y_pred, vid, uniset_labels)
+        results['p'].append(p)
+        results['r'].append(r)
+        results['f'].append(f)
+        results['k_cor'].append(k_cor)
+        results['s_cor'].append(s_cor)
 
     # output
-    total_results = {
-        'p': [], 'r': [], 'f': [], 'k_cor': [], 's_cor': []
-    }
-    for name in results:
-        for key in results[name]:
-            total_results[key] += results[name][key]
-            results[name][key] = sum(results[name][key]) / len(results[name][key])
-    for key in total_results:
-        total_results[key] = sum(total_results[key]) / len(total_results[key])
-    r = results['tvsum']
-    logging.info('TVSum F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
-    r = results['summe']
-    logging.info('SumMe F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
-    r = results['cosum']
-    logging.info('CoSum F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
-    r = total_results
-    logging.info('Total F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' % (r['p'], r['r'], r['f'], r['k_cor'], r['s_cor']))
+    for key in results:
+        results[key] = sum(results[key]) / len(results[key])
+    logging.info('TVSum F1(prf): %.3f %.3f %.3f, Rank(ks): %.3f %.3f' %
+                 (results['p'], results['r'], results['f'], results['k_cor'], results['s_cor']))
 
-    return total_results
+    return results
 
 def noam_scheme(init_lr, global_step, warmup_steps=4000.):
     '''Noam scheme learning rate decay
