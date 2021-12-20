@@ -96,13 +96,10 @@ EVALUATE_MODEL = True
 MIN_TRAIN_STEPS = 0
 PRESTEPS = 0
 
-SHOTS_NUMS = [2783, 3692, 2152, 3588]
-FRAME_PER_SHOT = 5  #
-
 if hp.server == 0:
     # path for JD server
-    UNISET_BASE = ''
-    MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_utc2/'
+    UNISET_BASE = r'/public/data1/users/hulinkang/Uniset/'
+    MODEL_SAVE_BASE = r'/public/data1/users/hulinkang/model_HL_Unify/'
 elif hp.server == 1:
     # path for USTC servers
     UNISET_BASE = r'/data/linkang/Uniset/'
