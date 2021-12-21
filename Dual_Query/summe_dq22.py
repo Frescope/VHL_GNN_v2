@@ -48,7 +48,7 @@ class Path:
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
     parser.add_argument('--num_blocks_local', default=3, type=int)  # local attention的层数
-    parser.add_argument('--local_attention_pose', default='late', type=str)  # late & early，local attention的位置，前融合或后融合
+    parser.add_argument('--local_attention_pose', default='early', type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
     parser.add_argument('--shot_num',default=10,type=int)  # 片段数量

@@ -1,4 +1,5 @@
 # 加入帧聚合模块
+# 使用dual_query输出方式，选取
 
 import tensorflow as tf
 import numpy as np
@@ -266,9 +267,28 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
         visual_branch = tf.layers.dense(visual_branch, 512, use_bias=True, activation=tf.nn.relu)
         visual_branch = tf.layers.dense(visual_branch, 256, use_bias=True, activation=None)
 
-        visual_branch = tf.layers.dense(visual_branch, 64, use_bias=True, activation=tf.nn.relu)
-        visual_branch = tf.layers.dense(visual_branch, 1, use_bias=True, activation=None)
-        pred_scores = tf.squeeze(tf.sigmoid(visual_branch))
+        # query branch
+        query_branch = tf.layers.dense(query_output, 1024, use_bias=True, activation=tf.nn.relu)
+        query_branch = tf.layers.dense(query_branch, 512, use_bias=True, activation=tf.nn.relu)
+        query_branch = tf.layers.dense(query_branch, 256, use_bias=True, activation=None)  # bc*q_num*D
+
+        # 引入视频片段与各个concept的相关性关系
+        corr_mat = tf.matmul(visual_branch, tf.transpose(query_branch, [0, 2, 1]))  # bc*shotnum*q_num
+        sigmoid_score = tf.sigmoid(corr_mat)  # 对每个query，计算所有片段的相关性，片段间不影响
+        softmax_logits = tf.nn.softmax(corr_mat, axis=1)  # 对每个片段，计算其与所有query的相关性，首先对片段做归一化
+        aux_score = tf.nn.softmax(tf.reduce_sum(softmax_logits, axis=2, keepdims=True), axis=1)  # 附加得分，对应到每个片段
+        pred_matrix = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score  # bc*shotnum*q_num
+
+        # 选取与query相关的部分
+        pred_scores = []
+        for i in range(hp.bc):
+            ind = indexes[i]
+            pred_scores.append(pred_matrix[i : i + 1, :, ind])
+        pred_scores = tf.concat(pred_scores, axis=0)  # bc*shotnum
+
+        # visual_branch = tf.layers.dense(visual_branch, 64, use_bias=True, activation=tf.nn.relu)
+        # visual_branch = tf.layers.dense(visual_branch, 1, use_bias=True, activation=None)
+        # pred_scores = tf.squeeze(tf.sigmoid(visual_branch))
 
         return shot_output, memory_output, pred_scores
 

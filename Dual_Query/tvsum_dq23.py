@@ -1,6 +1,4 @@
-# 将frame聚合为shot，使用shot-level的排序做测试
-# 注意padding：shot内部补充空白帧，序列内部补充空白shot，batch内部补充空白序列（仅限测试）
-# 前两种padding全部在构建序列时完成，注意padding标记对应到帧；空白序列使用循环填充实现，train和test一样。
+# 与tvsum_dq22相同，用于实验transformer_dq23
 
 import os
 import time
@@ -17,14 +15,14 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_uniset_dq22 import transformer
+from transformer_uniset_dq23 import transformer
 from scipy import stats
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='2',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
     parser.add_argument('--msd', default='video_trans', type=str)
@@ -32,9 +30,9 @@ class Path:
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default=0.1,type=float)
-    parser.add_argument('--lr_noam', default=1e-4, type=float)
-    parser.add_argument('--warmup', default=6000, type=int)
-    parser.add_argument('--maxstep', default=2000, type=int)
+    parser.add_argument('--lr_noam', default=1e-3, type=float)
+    parser.add_argument('--warmup', default=500, type=int)
+    parser.add_argument('--maxstep', default=1000, type=int)
     parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
     parser.add_argument('--eval_epoch', default=10, type=int)
