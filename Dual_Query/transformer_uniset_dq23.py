@@ -279,16 +279,16 @@ def transformer(img_embs, segment_embs, txt_embs, memory_embs,
         aux_score = tf.nn.softmax(tf.reduce_sum(softmax_logits, axis=2, keepdims=True), axis=1)  # 附加得分，对应到每个片段
         pred_matrix = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score  # bc*shotnum*q_num
 
-        # # 选取与query相关的部分
-        # pred_scores = []
-        # for i in range(hp.bc):
-        #     ind = indexes[i]
-        #     pred_scores.append(pred_matrix[i : i + 1, :, ind])
-        # pred_scores = tf.concat(pred_scores, axis=0)  # bc*shotnum
+        # 选取与query相关的部分
+        pred_scores = []
+        for i in range(hp.bc):
+            ind = indexes[i]
+            pred_scores.append(pred_matrix[i : i + 1, :, ind])
+        pred_scores = tf.concat(pred_scores, axis=0)  # bc*shotnum
 
-        visual_branch = tf.layers.dense(pred_matrix, 64, use_bias=True, activation=tf.nn.relu)
-        visual_branch = tf.layers.dense(visual_branch, 1, use_bias=True, activation=None)
-        pred_scores = tf.squeeze(tf.sigmoid(visual_branch))
+        # visual_branch = tf.layers.dense(pred_matrix, 64, use_bias=True, activation=tf.nn.relu)
+        # visual_branch = tf.layers.dense(visual_branch, 1, use_bias=True, activation=None)
+        # pred_scores = tf.squeeze(tf.sigmoid(visual_branch))
 
         return shot_output, memory_output, pred_scores
 

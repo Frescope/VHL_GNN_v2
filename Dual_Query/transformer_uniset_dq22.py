@@ -1,4 +1,5 @@
 # 加入帧聚合模块
+# 使用visual节点的输出接MLP作为输出
 
 import tensorflow as tf
 import numpy as np

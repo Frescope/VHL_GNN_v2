@@ -1,5 +1,5 @@
 # 加入帧聚合模块
-# 结合dual_query与mlp作为输出模块
+# 结合dual_query与mlp作为输出模块，首先计算aux得分，然后与visual节点的MLP得分相加
 
 import tensorflow as tf
 import numpy as np
