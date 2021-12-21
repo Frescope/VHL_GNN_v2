@@ -1,4 +1,4 @@
-# 与tvsum_dq22相同，用于实验transformer_dq23
+# 与tvsum_dq22相同，用于实验transformer_dq24
 
 import os
 import time
@@ -15,7 +15,7 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_uniset_dq23 import transformer
+from transformer_uniset_dq24 import transformer
 from scipy import stats
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
