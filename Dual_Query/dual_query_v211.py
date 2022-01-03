@@ -39,7 +39,7 @@ class Path:
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
-    parser.add_argument('--run_mode', default='train', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
+    parser.add_argument('--run_mode', default='test', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
 
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)

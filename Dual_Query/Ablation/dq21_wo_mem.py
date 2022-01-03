@@ -15,26 +15,26 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_dual_query_v21 import transformer
+from trfm21_wo_mem import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='2',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--msd', default='video_trans', type=str)
+    parser.add_argument('--msd', default='video_trans1', type=str)
 
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=500, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
@@ -43,8 +43,8 @@ class Path:
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--num_blocks_local',default=4,type=int)  # local attention的层数
-    parser.add_argument('--local_attention_pose',default='early',type=str)  # late & early，local attention的位置，前融合或后融合
+    parser.add_argument('--num_blocks_local',default=3,type=int)  # local attention的层数
+    parser.add_argument('--local_attention_pose',default='late',type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
     parser.add_argument('--seq_len',default=25,type=int)  # shot数量，实际序列长度需要乘以5
@@ -62,12 +62,12 @@ class Path:
     parser.add_argument('--query_num', default=48, type=int)  # query节点数量，实际上在UTC数据集中对应concept的数量
 
     # memory参数
-    parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
+    parser.add_argument('--memory_num', default=0, type=int)  # memory节点数量
     parser.add_argument('--memory_dimension', default=1024, type=int)  # memory节点的维度
 
     # loss参数
-    parser.add_argument('--loss_pred_ratio', default=0.80, type=float)  # pred损失比例
-    parser.add_argument('--mem_div', default=0.10, type=float)  # memory_diversity损失比例
+    parser.add_argument('--loss_pred_ratio', default=0.90, type=float)  # pred损失比例
+    parser.add_argument('--mem_div', default=0.00, type=float)  # memory_diversity损失比例
     parser.add_argument('--shots_div', default=0.10, type=float)  # shots_diversity损失比例
 
 hparams = Path()
@@ -399,7 +399,7 @@ def _variable_with_weight_decay(name, shape, wd):
         tf.add_to_collection('weightdecay_losses', weight_decay)
     return var
 
-def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
+def tower_loss(pred_scores, pred_labels, shots_output, hp):
     # pred_scores: dual_query_scores, bc*seq_len*48
     # pred_labels: bc*seq_len*48
     # shots_output: bc*seq_len*D
@@ -444,13 +444,7 @@ def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
     else:
         shots_div_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
-    # memory多样性
-    if hp.mem_div >= 0.05:
-        memory_similiarity = cosine_similarity(memory_output)  # bc*1*mem_len
-        memory_div_loss = tf.reduce_mean(
-            tf.reduce_sum(memory_similiarity, axis=2) / hp.memory_num / (hp.memory_num - 1))  # 对所有memory节点 的相似度损失求和，再对所有序列求平均
-    else:
-        memory_div_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
+    memory_div_loss = tf.convert_to_tensor(np.zeros(1), dtype=tf.float32)
 
     loss = pred_loss * hp.loss_pred_ratio + \
            shots_div_loss * hp.shots_div + \
@@ -664,7 +658,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
         segment_poses_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.segment_num))
         query_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.query_num, D_CONCEPT))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num,
-                                                              hp.seq_len * FRAME_PER_SHOT + hp.segment_num + hp.query_num + hp.memory_num
+                                                              hp.seq_len * FRAME_PER_SHOT + hp.segment_num + hp.query_num
                                                               ))
         pred_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, hp.query_num))
         dropout_holder = tf.placeholder(tf.float32, shape=())
@@ -676,15 +670,6 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
             query_embs_b.append(concept_embedding[c])
         query_embs_b = np.array(query_embs_b).reshape((1, hp.query_num, D_CONCEPT))
         query_embs_b = np.tile(query_embs_b, [hp.gpu_num * hp.bc, 1, 1])
-
-        # memory initialization
-        memory_init = tf.truncated_normal_initializer(stddev=0.01)
-        memory_nodes_seq = tf.get_variable(name='memory_nodes',
-                                           shape=(1, hp.memory_num, hp.memory_dimension),
-                                           initializer=memory_init,
-                                           dtype=tf.float32,
-                                           trainable=True)
-        memory_nodes = tf.tile(memory_nodes_seq, [hp.bc * hp.gpu_num, 1, 1])
 
         # training operations
         lr = noam_scheme(hp.lr_noam, global_step, hp.warmup)
@@ -705,15 +690,15 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                 scores_src = scores_src_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 pred_labels = pred_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
 
-                shot_output, memory_output, sigmoid_score, aux_score = transformer(features,segment_embs,
-                                                                                    query_embs, memory_nodes,
+                shot_output, sigmoid_score, aux_score = transformer(features,segment_embs,
+                                                                                    query_embs,
                                                                                     segment_poses, positions,
                                                                                     scores_src, dropout_holder,
                                                                                     training_holder, hp)
                 pred_scores = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score
                 pred_scores_list.append(pred_scores)
 
-                loss, loss_ob = tower_loss(pred_scores, pred_labels, shot_output, memory_output, hp)
+                loss, loss_ob = tower_loss(pred_scores, pred_labels, shot_output, hp)
                 varlist = tf.trainable_variables()  # 全部训练
                 grads_train = opt_train.compute_gradients(loss, varlist)
                 thresh = GRAD_THRESHOLD  # 梯度截断 防止爆炸
@@ -754,7 +739,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
             features_b, positions_b, segment_embs_b, segment_poses_b, scores_b, s1_labels_b = \
                 get_batch_train(data_train, segment_dict, train_scheme, step, hp)
             scores_src_b = np.hstack(
-                (scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.query_num + hp.memory_num))))  # encoder中开放所有concept节点
+                (scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.query_num))))  # encoder中开放所有concept节点
             observe = sess.run([train_op] +
                                loss_list +
                                pred_scores_list +
@@ -801,7 +786,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                     features_b, positions_b, segment_embs_b, segment_poses_b, scores_b = \
                         get_batch_test(data_test, segment_dict, test_scheme, test_step, hp)
                     scores_src_b = np.hstack((scores_b, np.ones(
-                        (hp.gpu_num * hp.bc, hp.segment_num + hp.query_num + hp.memory_num))))  # encoder中开放所有concept节点
+                        (hp.gpu_num * hp.bc, hp.segment_num + hp.query_num))))  # encoder中开放所有concept节点
                     temp_list = sess.run(pred_scores_list, feed_dict={features_holder: features_b,
                                                                       positions_holder: positions_b,
                                                                       scores_src_holder: scores_src_b,

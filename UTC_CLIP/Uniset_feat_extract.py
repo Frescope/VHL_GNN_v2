@@ -3,6 +3,8 @@
 import clip
 import torch
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '2'
+
 import json
 import pickle
 import numpy as np
@@ -34,6 +36,8 @@ def getVisualFeatures(frame_dir, feature_base):
 
     with torch.no_grad():
         for vid in os.listdir(frame_dir):
+            if os.path.isfile(feature_base + '%s_CLIP_2fps.npy' % vid):
+                continue
             print(vid, len(os.listdir(os.path.join(frame_dir, vid))))
             image_list = []
             visual_features = []
@@ -46,10 +50,11 @@ def getVisualFeatures(frame_dir, feature_base):
                     image_list.clear()
                     image_feature = model.encode_image(images)
                     visual_features.append(image_feature.cpu().numpy())
-            images = torch.cat(image_list, 0)
-            image_list.clear()
-            image_feature = model.encode_image(images)
-            visual_features.append(image_feature.cpu().numpy())
+            if len(image_list) > 0:  # 如果还有剩余
+                images = torch.cat(image_list, 0)
+                image_list.clear()
+                image_feature = model.encode_image(images)
+                visual_features.append(image_feature.cpu().numpy())
 
             vid_features = np.concatenate(visual_features, axis=0)
             visual_features.clear()
@@ -151,6 +156,32 @@ def CLIP_cosum():
     # getVisualFeatures(FRAME_DIR, FEATURE_BASE)
     getTextFeatures(TEXT_DICT_PATH, 'cosum')
 
+def CLIP_rad():
+    FRAME_DIR = r'/data/linkang/RAD/frames_1fps/'
+    FEATURE_BASE = r'/data/linkang/Uniset/rad_clip_visual_1fps/'
+    LABEL_PATH = r'/data/linkang/Uniset/rad_labels.json'
+    DICT_PATH = r'/data/linkang/Uniset/rad_clip_text.pkl'
+
+    # getVisualFeatures(FRAME_DIR, FEATURE_BASE)
+
+    # extract text features
+    with open(LABEL_PATH, 'r') as file:
+        labels = json.load(file)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, preprocess = clip.load("ViT-B/16", device=device)
+    dict = {}
+    for vname in labels:
+        dict[vname] = {}
+        text = vname
+        with torch.no_grad():
+            text_emb = clip.tokenize(text).to(device)
+            text_feature = model.encode_text(text_emb)
+            dict[vname]['text'] = text
+            dict[vname]['feature'] = text_feature.cpu().numpy()
+    with open(DICT_PATH, 'wb') as file:
+        pickle.dump(dict, file)
+    return
+
 def label_build():
     # tvsum与summe的原始标签是对应到每一帧的、每个标注者的评分
     # cosum的原始标签是三种类型的、对应到每一帧的二元标注
@@ -243,15 +274,16 @@ if __name__ == '__main__':
     # CLIP_summe()
     # CLIP_cosum()
     # Uniset = label_build()
+    CLIP_rad()
 
-    with open(r'/data/linkang/Uniset/tvsum_clip_text.pkl', 'rb') as file:
-        tvsum = pickle.load(file)
-    with open(r'/data/linkang/Uniset/summe_clip_text.pkl', 'rb') as file:
-        summe = pickle.load(file)
-    with open(r'/data/linkang/Uniset/cosum_clip_text.pkl', 'rb') as file:
-        cosum = pickle.load(file)
-    with open(r'/data/linkang/Uniset/uniset_labels.json', 'r') as file:
-        uniset = json.load(file)
+    # with open(r'/data/linkang/Uniset/tvsum_clip_text.pkl', 'rb') as file:
+    #     tvsum = pickle.load(file)
+    # with open(r'/data/linkang/Uniset/summe_clip_text.pkl', 'rb') as file:
+    #     summe = pickle.load(file)
+    # with open(r'/data/linkang/Uniset/cosum_clip_text.pkl', 'rb') as file:
+    #     cosum = pickle.load(file)
+    # with open(r'/data/linkang/Uniset/uniset_labels.json', 'r') as file:
+    #     uniset = json.load(file)
 
     print()
 

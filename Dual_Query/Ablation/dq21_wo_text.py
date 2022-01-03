@@ -1,3 +1,4 @@
+# 去掉所有query节点
 # 使用Self-attention结构实现在输出端的帧聚合
 
 import os
@@ -15,7 +16,7 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_dual_query_v21 import transformer
+from trfm21_wo_text import transformer
 import networkx as nx
 
 class Path:
@@ -31,19 +32,19 @@ class Path:
     parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=500, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
-    parser.add_argument('--run_mode', default='train', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
+    parser.add_argument('--run_mode', default='test', type=str)  # train: 做训练，最后全部测试一次；test：只做测试
 
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--num_blocks_local',default=4,type=int)  # local attention的层数
+    parser.add_argument('--num_blocks_local',default=3,type=int)  # local attention的层数
     parser.add_argument('--local_attention_pose',default='early',type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
@@ -664,7 +665,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
         segment_poses_holder = tf.placeholder(tf.int32, shape=(hp.bc * hp.gpu_num, hp.segment_num))
         query_embs_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.query_num, D_CONCEPT))
         scores_src_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num,
-                                                              hp.seq_len * FRAME_PER_SHOT + hp.segment_num + hp.query_num + hp.memory_num
+                                                              hp.seq_len * FRAME_PER_SHOT + hp.segment_num + hp.memory_num
                                                               ))
         pred_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, hp.query_num))
         dropout_holder = tf.placeholder(tf.float32, shape=())
@@ -705,12 +706,11 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                 scores_src = scores_src_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
                 pred_labels = pred_labels_holder[gpu_index * hp.bc: (gpu_index + 1) * hp.bc]
 
-                shot_output, memory_output, sigmoid_score, aux_score = transformer(features,segment_embs,
+                shot_output, memory_output, pred_scores = transformer(features,segment_embs,
                                                                                     query_embs, memory_nodes,
                                                                                     segment_poses, positions,
                                                                                     scores_src, dropout_holder,
                                                                                     training_holder, hp)
-                pred_scores = (1 - hp.aux_pr) * sigmoid_score + hp.aux_pr * aux_score
                 pred_scores_list.append(pred_scores)
 
                 loss, loss_ob = tower_loss(pred_scores, pred_labels, shot_output, memory_output, hp)
@@ -754,7 +754,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
             features_b, positions_b, segment_embs_b, segment_poses_b, scores_b, s1_labels_b = \
                 get_batch_train(data_train, segment_dict, train_scheme, step, hp)
             scores_src_b = np.hstack(
-                (scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.query_num + hp.memory_num))))  # encoder中开放所有concept节点
+                (scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.memory_num))))  # encoder中开放所有concept节点
             observe = sess.run([train_op] +
                                loss_list +
                                pred_scores_list +
@@ -801,7 +801,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                     features_b, positions_b, segment_embs_b, segment_poses_b, scores_b = \
                         get_batch_test(data_test, segment_dict, test_scheme, test_step, hp)
                     scores_src_b = np.hstack((scores_b, np.ones(
-                        (hp.gpu_num * hp.bc, hp.segment_num + hp.query_num + hp.memory_num))))  # encoder中开放所有concept节点
+                        (hp.gpu_num * hp.bc, hp.segment_num + hp.memory_num))))  # encoder中开放所有concept节点
                     temp_list = sess.run(pred_scores_list, feed_dict={features_holder: features_b,
                                                                       positions_holder: positions_b,
                                                                       scores_src_holder: scores_src_b,

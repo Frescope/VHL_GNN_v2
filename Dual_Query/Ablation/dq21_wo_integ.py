@@ -15,26 +15,26 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_dual_query_v21 import transformer
+from trfm21_wo_integ import transformer
 import networkx as nx
 
 class Path:
     parser = argparse.ArgumentParser()
     # 显卡，服务器与存储
-    parser.add_argument('--gpu', default='0',type=str)
+    parser.add_argument('--gpu', default='3',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--msd', default='video_trans', type=str)
+    parser.add_argument('--msd', default='video_trans2', type=str)
 
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=500, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型

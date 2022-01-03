@@ -15,7 +15,7 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_dual_query_v21 import transformer
+from trfm21_one_text import transformer
 import networkx as nx
 
 class Path:
@@ -31,10 +31,10 @@ class Path:
     parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=500, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
@@ -43,8 +43,8 @@ class Path:
     # Encoder结构参数
     parser.add_argument('--num_heads',default=8,type=int)
     parser.add_argument('--num_blocks',default=6,type=int)
-    parser.add_argument('--num_blocks_local',default=4,type=int)  # local attention的层数
-    parser.add_argument('--local_attention_pose',default='early',type=str)  # late & early，local attention的位置，前融合或后融合
+    parser.add_argument('--num_blocks_local',default=3,type=int)  # local attention的层数
+    parser.add_argument('--local_attention_pose',default='late',type=str)  # late & early，local attention的位置，前融合或后融合
 
     # 序列参数，长度与正样本比例
     parser.add_argument('--seq_len',default=25,type=int)  # shot数量，实际序列长度需要乘以5
@@ -59,7 +59,7 @@ class Path:
     parser.add_argument('--segment_mode', default='min', type=str)  # segment-embedding的聚合方式
 
     # query-embedding参数
-    parser.add_argument('--query_num', default=48, type=int)  # query节点数量，实际上在UTC数据集中对应concept的数量
+    parser.add_argument('--query_num', default=2, type=int)  # query节点数量，实际上在UTC数据集中对应concept的数量
 
     # memory参数
     parser.add_argument('--memory_num', default=20, type=int)  # memory节点数量
@@ -311,7 +311,7 @@ def train_scheme_build(data_train, concepts, query_summary, hp):
     random.shuffle(train_scheme)
     return train_scheme
 
-def get_batch_train(data_train, segment_dict, train_scheme, step, hp):
+def get_batch_train(data_train, segment_dict, train_scheme, concepts, concept_embedding, step, hp):
     # 从train_scheme中获取gpu_num*bc个序列，每个长度seq_len，并返回每个clip的全局位置
     batch_num = hp.gpu_num * hp.bc
     features = []
@@ -319,14 +319,21 @@ def get_batch_train(data_train, segment_dict, train_scheme, step, hp):
     positions = []
     segment_embs = []
     segment_poses = []
+    query_embs = []
     for i in range(batch_num):
         pos = (step * batch_num + i) % len(train_scheme)
         vid, query, clip_list = train_scheme[pos]
+        c1, c2 = query.split('_')
+        c1_emb = concept_embedding[c1].reshape((-1))
+        c2_emb = concept_embedding[c2].reshape((-1))
+        ind1 = concepts.index(c1)
+        ind2 = concepts.index(c2)
         features.append(data_train[vid]['feature'][clip_list])
-        s1_labels.append(data_train[vid]['s1_label'][clip_list])
+        s1_labels.append(data_train[vid]['s1_label'][clip_list][:,[ind1, ind2]])
         positions.append(clip_list)
         segment_embs.append(segment_dict[vid]['segment_emb'])
         segment_poses.append(segment_dict[vid]['segment_pos'])
+        query_embs.append([c1_emb, c2_emb])
     features = np.array(features).reshape((batch_num, hp.seq_len * FRAME_PER_SHOT, D_VISUAL))
     s1_labels = np.array(s1_labels)
     positions = np.tile(np.array(positions).reshape((batch_num, hp.seq_len, 1)), (1, 1, FRAME_PER_SHOT))  # 将shot的位置编码复制扩展到每一帧
@@ -334,22 +341,24 @@ def get_batch_train(data_train, segment_dict, train_scheme, step, hp):
     segment_embs = np.array(segment_embs)
     segment_poses = np.array(segment_poses)
     scores = np.ones((batch_num, hp.seq_len * FRAME_PER_SHOT))
-    return features, positions, segment_embs, segment_poses, scores, s1_labels
+    query_embs = np.array(query_embs)
+    return features, positions, segment_embs, segment_poses, scores, s1_labels, query_embs
 
-def test_scheme_build(data_test, seq_len):
+def test_scheme_build(data_test, query_summary, hp):
     # 依次输入测试集中所有clip，不足seqlen的要补足，在getbatch中补足不够一个batch的部分
     # (vid, seq_start, seq_end)形式
     test_scheme = []
     test_vids = []
     for vid in data_test:
         vlength = len(data_test[str(vid)]['s1_label'])
-        seq_num = math.ceil(vlength / seq_len)
-        for i in range(seq_num):
-            test_scheme.append((vid, i * seq_len, min(vlength,(i+1) * seq_len)))
-        test_vids.append((vid, vlength))
+        for query in query_summary[vid]:
+            seq_num = math.ceil(vlength / hp.seq_len)  # 需要为这个video-query pair准备的序列数量
+            for i in range(seq_num):
+                test_scheme.append((vid, query, i * hp.seq_len, min(vlength,(i+1) * hp.seq_len)))
+            test_vids.append((vid, vlength, query))
     return test_scheme, test_vids
 
-def get_batch_test(data_test, segment_dict, test_scheme, step, hp):
+def get_batch_test(data_test, segment_dict, test_scheme, concepts, concept_embedding, step, hp):
     # 标记每个序列中的有效长度，并对不足一个batch的部分做padding
     # 不需要对序列水平上的padding做标记
     features = []
@@ -357,16 +366,22 @@ def get_batch_test(data_test, segment_dict, test_scheme, step, hp):
     segment_embs = []
     segment_poses = []
     scores = []
+    query_embs = []
     batch_num = hp.gpu_num * hp.bc
     for i in range(batch_num):
         pos = (step * batch_num + i) % len(test_scheme)
-        vid, seq_start, seq_end = test_scheme[pos]
+        vid, query, seq_start, seq_end = test_scheme[pos]
+        c1, c2 = query.split('_')
+        c1_emb = concept_embedding[c1].reshape((-1))
+        c2_emb = concept_embedding[c2].reshape((-1))
+        ind1 = concepts.index(c1)
+        ind2 = concepts.index(c2)
         vlength = len(data_test[str(vid)]['s1_label'])
         padding_len = hp.seq_len - (seq_end - seq_start)
         feature = data_test[str(vid)]['feature'][seq_start:seq_end].reshape(((seq_end - seq_start) * FRAME_PER_SHOT, D_VISUAL))
         position = np.tile(np.array(list(range(seq_start, seq_end))).reshape((seq_end - seq_start, 1)), (1, FRAME_PER_SHOT))
         position = np.reshape(position, ((seq_end-seq_start) * FRAME_PER_SHOT))
-        label = data_test[str(vid)]['s1_label'][seq_start:seq_end]
+        label = data_test[str(vid)]['s1_label'][seq_start:seq_end,[ind1, ind2]]
         score = np.ones(len(label) * FRAME_PER_SHOT)
         if padding_len > 0:
             feature_pad = np.zeros((padding_len * FRAME_PER_SHOT, D_VISUAL))
@@ -380,12 +395,14 @@ def get_batch_test(data_test, segment_dict, test_scheme, step, hp):
         scores.append(score)
         segment_embs.append(segment_dict[vid]['segment_emb'])
         segment_poses.append(segment_dict[vid]['segment_pos'])
+        query_embs.append([c1_emb, c2_emb])
     features = np.array(features)
     positions = np.array(positions)
     segment_embs = np.array(segment_embs)
     segment_poses = np.array(segment_poses)
     scores = np.array(scores)
-    return features, positions, segment_embs, segment_poses, scores
+    query_embs = np.array(query_embs)
+    return features, positions, segment_embs, segment_poses, scores, query_embs
 
 def _variable_on_cpu(name, shape, initializer):
     with tf.device('/cpu:0'):
@@ -400,10 +417,11 @@ def _variable_with_weight_decay(name, shape, wd):
     return var
 
 def tower_loss(pred_scores, pred_labels, shots_output, memory_output, hp):
-    # pred_scores: dual_query_scores, bc*seq_len*48
+    # pred_scores: dual_query_scores, bc*seq_len*2
     # pred_labels: bc*seq_len*48
     # shots_output: bc*seq_len*D
     # memory_output: bc*memory_num*D
+    # query_indexes: bc*2
     # 对pred_loss，计算各个shot在标签中所有concept相关预测上的NCE-Loss的均值
     # 计算shots与memory的diversity-loss，pred_loss加权求和
 
@@ -509,7 +527,7 @@ def similarity_compute(Tags,vid,shot_seq1,shot_seq2):
 
 def evaluation_autothresh(pred_s1_lists, query_summary, Tags, test_vids, concepts):
     # 首先根据两组concept_logits选出一组候选集，然后从候选里根据summary_logits做最终预测
-    p_logits = pred_s1_lists[0]  # (bc*seq_len) * 48
+    p_logits = pred_s1_lists[0]  # (bc*seq_len) * 2
     for i in range(1, len(pred_s1_lists)):
         p_logits = np.vstack((p_logits, pred_s1_lists[i]))
 
@@ -527,37 +545,32 @@ def evaluation_autothresh(pred_s1_lists, query_summary, Tags, test_vids, concept
         REC_values = []
         F1_values = []
         for i in range(len(test_vids)):
-            vid, vlength = test_vids[i]
+            vid, vlength, query = test_vids[i]
             summary = query_summary[str(vid)]
             rank_ratio = quick[str(vid)]
             hl_num = math.ceil(vlength * rank_ratio)
             p_predictions = p_logits[pos : pos + vlength]
-            pos += vlength  # utc中测试时只有一个视频，故不需要padding
-            for query in summary:
-                shots_gt = summary[query]
-                c1, c2 = query.split('_')
-                c1_ind = concepts.index(c1)
-                c2_ind = concepts.index(c2)
+            padlen = (hp.seq_len - vlength % hp.seq_len) % hp.seq_len
+            pos += vlength + padlen
+            shots_gt = summary[query]
 
-                # make summary
-                pred_c1 = p_predictions[:, c1_ind]
-                pred_c2 = p_predictions[:, c2_ind]
-                scores = (pred_c1 + pred_c2) / 2
-                scores_indexes = scores.reshape((-1, 1))
-                scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1,1))))
-                shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
-                shots_pred = shots_pred[-hl_num:, 1].astype(int)
-                shots_pred.sort()
+            # make summary
+            scores = np.mean(p_predictions, axis=1)
+            scores_indexes = scores.reshape((-1, 1))
+            scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1,1))))
+            shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
+            shots_pred = shots_pred[-hl_num:, 1].astype(int)
+            shots_pred.sort()
 
-                # compute
-                sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
-                weight = shot_matching(sim_mat)
-                precision = weight / len(shots_pred)
-                recall = weight / len(shots_gt)
-                f1 = 2 * precision * recall / (precision + recall)
-                PRE_values.append(precision)
-                REC_values.append(recall)
-                F1_values.append(f1)
+            # compute
+            sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+            weight = shot_matching(sim_mat)
+            precision = weight / len(shots_pred)
+            recall = weight / len(shots_gt)
+            f1 = 2 * precision * recall / (precision + recall)
+            PRE_values.append(precision)
+            REC_values.append(recall)
+            F1_values.append(f1)
         PRE_value = np.array(PRE_values).mean()
         REC_value = np.array(REC_values).mean()
         F1_value = np.array(F1_values).mean()
@@ -580,36 +593,31 @@ def evaluation_test(pred_s1_lists, query_summary, Tags, test_vids, concepts, ran
     REC_values = []
     F1_values = []
     for i in range(len(test_vids)):
-        vid, vlength = test_vids[i]
+        vid, vlength, query = test_vids[i]
         summary = query_summary[str(vid)]
         hl_num = rank_num
         p_predictions = p_logits[pos: pos + vlength]
-        pos += vlength
-        for query in summary:
-            shots_gt = summary[query]
-            c1, c2 = query.split('_')
-            c1_ind = concepts.index(c1)
-            c2_ind = concepts.index(c2)
+        padlen = (hp.seq_len - vlength % hp.seq_len) % hp.seq_len
+        pos += vlength + padlen
+        shots_gt = summary[query]
 
-            # make summary
-            pred_c1 = p_predictions[:, c1_ind]
-            pred_c2 = p_predictions[:, c2_ind]
-            scores = (pred_c1 + pred_c2) / 2
-            scores_indexes = scores.reshape((-1, 1))
-            scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
-            shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
-            shots_pred = shots_pred[-hl_num:, 1].astype(int)
-            shots_pred.sort()
+        # make summary
+        scores = np.mean(p_predictions, axis=1)
+        scores_indexes = scores.reshape((-1, 1))
+        scores_indexes = np.hstack((scores_indexes, np.array(range(len(scores))).reshape((-1, 1))))
+        shots_pred = scores_indexes[scores_indexes[:, 0].argsort()]
+        shots_pred = shots_pred[-hl_num:, 1].astype(int)
+        shots_pred.sort()
 
-            # compute
-            sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
-            weight = shot_matching(sim_mat)
-            precision = weight / len(shots_pred)
-            recall = weight / len(shots_gt)
-            f1 = 2 * precision * recall / (precision + recall)
-            PRE_values.append(precision)
-            REC_values.append(recall)
-            F1_values.append(f1)
+        # compute
+        sim_mat = similarity_compute(Tags, int(vid), shots_pred, shots_gt)
+        weight = shot_matching(sim_mat)
+        precision = weight / len(shots_pred)
+        recall = weight / len(shots_gt)
+        f1 = 2 * precision * recall / (precision + recall)
+        PRE_values.append(precision)
+        REC_values.append(recall)
+        F1_values.append(f1)
     PRE_values = np.array(PRE_values)
     REC_values = np.array(REC_values)
     F1_values = np.array(F1_values)
@@ -669,13 +677,6 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
         pred_labels_holder = tf.placeholder(tf.float32, shape=(hp.bc * hp.gpu_num, hp.seq_len, hp.query_num))
         dropout_holder = tf.placeholder(tf.float32, shape=())
         training_holder = tf.placeholder(tf.bool, shape=())
-
-        # query embeddings
-        query_embs_b = []
-        for c in concepts:
-            query_embs_b.append(concept_embedding[c])
-        query_embs_b = np.array(query_embs_b).reshape((1, hp.query_num, D_CONCEPT))
-        query_embs_b = np.tile(query_embs_b, [hp.gpu_num * hp.bc, 1, 1])
 
         # memory initialization
         memory_init = tf.truncated_normal_initializer(stddev=0.01)
@@ -742,7 +743,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
 
         # train & test preparation
         train_scheme = train_scheme_build(data_train, concepts, query_summary, hp)
-        test_scheme, test_vids = test_scheme_build(data_test, hp.seq_len)
+        test_scheme, test_vids = test_scheme_build(data_test, query_summary, hp)
         epoch_step = math.ceil(len(train_scheme) / (hp.gpu_num * hp.bc))
         max_test_step = math.ceil(len(test_scheme) / (hp.gpu_num * hp.bc))
 
@@ -751,8 +752,8 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
         ob_sub_loss = []
         timepoint = time.time()
         for step in range(hp.maxstep):
-            features_b, positions_b, segment_embs_b, segment_poses_b, scores_b, s1_labels_b = \
-                get_batch_train(data_train, segment_dict, train_scheme, step, hp)
+            features_b, positions_b, segment_embs_b, segment_poses_b, scores_b, s1_labels_b, query_embs_b = \
+                get_batch_train(data_train, segment_dict, train_scheme, concepts, concept_embedding, step, hp)
             scores_src_b = np.hstack(
                 (scores_b, np.ones((hp.gpu_num * hp.bc, hp.segment_num + hp.query_num + hp.memory_num))))  # encoder中开放所有concept节点
             observe = sess.run([train_op] +
@@ -798,8 +799,8 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
                 # 按顺序预测测试集中每个视频的每个分段，全部预测后在每个视频内部排序，计算指标
                 pred_s1_lists = []
                 for test_step in range(max_test_step):
-                    features_b, positions_b, segment_embs_b, segment_poses_b, scores_b = \
-                        get_batch_test(data_test, segment_dict, test_scheme, test_step, hp)
+                    features_b, positions_b, segment_embs_b, segment_poses_b, scores_b, query_embs_b = \
+                        get_batch_test(data_test, segment_dict, test_scheme, concepts, concept_embedding, test_step, hp)
                     scores_src_b = np.hstack((scores_b, np.ones(
                         (hp.gpu_num * hp.bc, hp.segment_num + hp.query_num + hp.memory_num))))  # encoder中开放所有concept节点
                     temp_list = sess.run(pred_scores_list, feed_dict={features_holder: features_b,

@@ -1,4 +1,4 @@
-# 使用Self-attention结构实现在输出端的帧聚合
+# 没有随机采样构建序列
 
 import os
 import time
@@ -15,7 +15,7 @@ import argparse
 
 import scipy.io
 import pickle
-from transformer_dual_query_v21 import transformer
+from trfm21_wo_rand import transformer
 import networkx as nx
 
 class Path:
@@ -24,17 +24,17 @@ class Path:
     parser.add_argument('--gpu', default='0',type=str)
     parser.add_argument('--gpu_num',default=1,type=int)
     parser.add_argument('--server', default=1, type=int)
-    parser.add_argument('--msd', default='video_trans', type=str)
+    parser.add_argument('--msd', default='video_trans3', type=str)
 
     # 训练参数
     parser.add_argument('--bc',default=20,type=int)
     parser.add_argument('--dropout',default=0.1,type=float)
     parser.add_argument('--lr_noam', default=1e-5, type=float)
     parser.add_argument('--warmup', default=8500, type=int)
-    parser.add_argument('--maxstep', default=10000, type=int)
-    parser.add_argument('--repeat', default=3, type=int)
+    parser.add_argument('--maxstep', default=1000, type=int)
+    parser.add_argument('--repeat', default=1, type=int)
     parser.add_argument('--observe', default=0, type=int)
-    parser.add_argument('--eval_epoch', default=1, type=int)
+    parser.add_argument('--eval_epoch', default=5, type=int)
     parser.add_argument('--start', default='00', type=str)
     parser.add_argument('--end', default='99', type=str)
     parser.add_argument('--protection', default=0, type=int)  # 不检查步数太小的模型
@@ -244,69 +244,16 @@ def segment_embedding_build(data, hp):
         segment_dict[vid]['segment_pos'] = poses
     return segment_dict
 
-def train_scheme_build(data_train, concepts, query_summary, hp):
-    # 用于两阶段预测的序列构建
-    info_dict = {}
-    for vid in data_train:
-        label = data_train[vid]['s1_label']  # label for concept
-        info_dict[vid] = {}
-        for query in query_summary[vid]:
-            info_dict[vid][query] = {}
-            c1, c2 = query.split('_')
-            ind1 = concepts.index(c1)
-            ind2 = concepts.index(c2)
-            c1_label = label[:, ind1]
-            c2_label = label[:, ind2]
-            c1_pos_list = list(np.where(c1_label > 0)[0])
-            c1_neg_list = list(np.where(c1_label == 0)[0])
-            c2_pos_list = list(np.where(c2_label > 0)[0])
-            c2_neg_list = list(np.where(c2_label == 0)[0])
-            qs_pos_list = query_summary[vid][query]
-            random.shuffle(c1_pos_list)
-            random.shuffle(c1_neg_list)
-            random.shuffle(c2_pos_list)
-            random.shuffle(c2_neg_list)
-            random.shuffle(qs_pos_list)
-            info_dict[vid][query]['c1_pos'] = c1_pos_list
-            info_dict[vid][query]['c1_neg'] = c1_neg_list
-            info_dict[vid][query]['c2_pos'] = c2_pos_list
-            info_dict[vid][query]['c2_neg'] = c2_neg_list
-            info_dict[vid][query]['qs_pos'] = qs_pos_list
-
-    # 按照一定比例先取一些qs_pos节点，然后均分剩下的配额给两个concept
+def train_scheme_build(data_train, query_summary, hp):
     train_scheme = []
-    qs_num = math.ceil(hp.seq_len * hp.qs_pr)
-    c1_part_len = math.ceil((hp.seq_len - qs_num) / 2)  # c1部分的序列长度
-    c2_part_len = hp.seq_len - qs_num - c1_part_len
-    cp_num = math.ceil((c1_part_len * hp.concept_pr))  # c1和c2部分序列中的正例数量
     for vid in data_train:
         vlength = len(data_train[vid]['s1_label'])
         for query in query_summary[vid]:
-            c1_pos_list = info_dict[vid][query]['c1_pos']
-            c1_neg_list = info_dict[vid][query]['c1_neg']
-            c2_pos_list = info_dict[vid][query]['c2_pos']
-            c2_neg_list = info_dict[vid][query]['c2_neg']
-            k = math.ceil(max(len(c1_pos_list), len(c2_pos_list)) / cp_num)  # 取正例的循环次数，不足时从头循环
-            qs_part = random.sample(info_dict[vid][query]['qs_pos'], qs_num)  # 随机取若干qs正例
-            for i in range(k):  # 生成k个输入序列
-                # 取c1相关的序列
-                c1_pos_ind = i * cp_num % len(c1_pos_list)  # 从正例集合中取cp_nun个正例
-                c1_neg_ind = i * (c1_part_len - cp_num) % len(c1_neg_list)  # c1_part的余下部分从负例集合中取
-                c1_part = c1_pos_list[c1_pos_ind : c1_pos_ind + cp_num]
-                c1_part += c1_neg_list[c1_neg_ind : c1_neg_ind + c1_part_len - cp_num]
-                c1_part += c1_pos_list[0 : c1_part_len - len(c1_part)]  # 负例不足时做padding，一般不起作用
-                # 取c2相关的序列
-                c2_pos_ind = i * cp_num % len(c2_pos_list)  # 从正例集合中取cp_nun个正例
-                c2_neg_ind = i * (c2_part_len - cp_num) % len(c2_neg_list)  # c2_part的余下部分从负例集合中取
-                c2_part = c2_pos_list[c2_pos_ind: c2_pos_ind + cp_num]
-                c2_part += c2_neg_list[c2_neg_ind: c2_neg_ind + c2_part_len - cp_num]
-                c2_part += c2_pos_list[0: c2_part_len - len(c2_part)]  # 负例不足时做padding，一般不起作用
-                clip_list = list(set(qs_part + c1_part + c2_part))
-                while len(clip_list) < hp.seq_len:
-                    pad_clip = random.randint(0, vlength - 1)
-                    if pad_clip not in clip_list:
-                        clip_list.append(pad_clip)
-                clip_list.sort()
+            seq_num = math.ceil(vlength / hp.seq_len)
+            for i in range(seq_num):
+                end = min(vlength,(i+1) * hp.seq_len)
+                start = end - hp.seq_len
+                clip_list = list(range(start,end))
                 train_scheme.append((vid, query, clip_list))
     random.shuffle(train_scheme)
     return train_scheme
@@ -741,7 +688,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
             logging.info(' Ckpt Model Resrtored !')
 
         # train & test preparation
-        train_scheme = train_scheme_build(data_train, concepts, query_summary, hp)
+        train_scheme = train_scheme_build(data_train, query_summary, hp)
         test_scheme, test_vids = test_scheme_build(data_test, hp.seq_len)
         epoch_step = math.ceil(len(train_scheme) / (hp.gpu_num * hp.bc))
         max_test_step = math.ceil(len(test_scheme) / (hp.gpu_num * hp.bc))
@@ -779,7 +726,7 @@ def run_training(data_train, data_test, query_summary, Tags, concepts, concept_e
             if step % epoch_step == 0 or (step + 1) == hp.maxstep or test_mode == 1:
                 if step == 0 and test_mode == 0:
                     continue
-                train_scheme = train_scheme_build(data_train, concepts, query_summary, hp)  # shuffle train scheme
+                train_scheme = train_scheme_build(data_train, query_summary, hp)  # shuffle train scheme
                 duration = time.time() - timepoint
                 timepoint = time.time()
                 loss_array = np.array(ob_loss)

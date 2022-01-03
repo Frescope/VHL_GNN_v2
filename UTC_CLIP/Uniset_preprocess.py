@@ -3,12 +3,15 @@
 # 所有视频根据其所属类型或主题，使用CLIP抽取文本特征
 # 注意区分不同数据集的特征
 
+# 补充RAD数据集，帧率1fps
+
 import os
 import cv2
 import math
 import json
 import scipy.io
 import numpy as np
+import csv
 
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -157,4 +160,120 @@ def frame_capture_cosum():
         json.dump(labels, file, cls=NpEncoder)
     return
 
-frame_capture_cosum()
+# for rad
+
+def load_annotations_rad(anno_path):
+    # 加载标注，为每帧计算一个平均得分
+    raw_anno = {}
+    with open(anno_path, 'r') as file:
+        f_csv = csv.reader(file)
+        next(f_csv, None)
+        for row in f_csv:
+            query, assignID, imageURL, rel, cls = row
+            if query not in raw_anno:
+                raw_anno[query] = {}
+            frame_num = int(imageURL.split('/')[-1].split('.jpg')[0])
+            if frame_num not in raw_anno[query]:
+                raw_anno[query][frame_num] = []
+            raw_anno[query][frame_num].append((rel, cls))
+
+    # anno process
+    anno = {}
+    for query in raw_anno:
+        anno[query] = {}
+        rels = []
+        clss = []
+        for frame in raw_anno[query]:
+            rel = 0
+            cls = 0
+            for tup in raw_anno[query][frame]:
+                rel += int(tup[0])
+                cls += int(tup[1])
+            rels.append(rel / len(raw_anno[query][frame]))
+            clss.append(cls / len(raw_anno[query][frame]))
+        anno[query]['rel'] = rels
+        anno[query]['cls'] = clss
+        print(query, len(raw_anno[query]), len(raw_anno[query][0]), len(rels), len(clss))
+
+    with open(r'/data/linkang/RAD/anno_info.json', 'w') as file:
+        json.dump(anno, file)
+    return
+
+def frame_capture_rad():
+    def capture(video_path, frame_dir, vlabel):
+        vc = cv2.VideoCapture(video_path)
+        fps = vc.get(cv2.CAP_PROP_FPS)
+
+        rval, frame = vc.read()
+        count = 0
+        cap_num = 0
+        while rval:
+            time = int(round(count / fps, 1) * 10)  # 秒数乘10
+            if time % 10 == 0:  # 每秒取1帧
+                path = frame_dir + '/' + str(time).zfill(5) + '.jpg'
+                if not os.path.isfile(path):
+                    cv2.imwrite(path, frame)
+                    cap_num += 1
+                    if cap_num % 1000 == 0 and cap_num > 0:
+                        print('Frames: ', count, cap_num)
+            rval, frame = vc.read()
+            count += 1
+        vc.release()
+        print('Frame Captured: ', vlabel, count, cap_num)
+        return fps, count, cap_num
+
+    # load video-query mapping
+    with open(r'/data/linkang/RAD/query_videoURLs.csv', 'r') as file:
+        f_csv = csv.reader(file)
+        vid_query = {}
+        for row in f_csv:
+            query, url = row
+            vid = url.split('?v=')[-1][:11]
+            vid_query[vid] = query
+
+    # load annos
+    with open(r'/data/linkang/RAD/anno_info.json', 'r') as file:
+        annos = json.load(file)
+
+    # cap frames
+    for file in os.listdir(r'/data/linkang/RAD/videos/'):
+        vid = file.split('.')[0]
+        query = vid_query[vid]
+        video_path = r'/data/linkang/RAD/videos/' + file
+        frame_dir = r'/data/linkang/RAD/frames_1fps/' + vid
+        if not os.path.isdir(frame_dir):
+            os.makedirs(frame_dir)
+        else:
+            print(vid, "Already Processed !")
+            continue  # 默认这一视频已处理
+        scores = annos[query]['rel']
+        fps, count, cap_num = capture(video_path, frame_dir, query)
+        print(vid, query, len(scores), cap_num)
+
+    # label build
+    labels = {}
+    for file in os.listdir(r'/data/linkang/RAD/videos/'):
+        vc = cv2.VideoCapture(r'/data/linkang/RAD/videos' + file)
+        fps = vc.get(cv2.CAP_PROP_FPS)
+        fnum = vc.get(cv2.CAP_PROP_FRAME_COUNT)
+        vid = file.split('.')[0]
+        query = vid_query[vid]
+        scores = np.array(annos[query]['rel'])
+        frame_cap_num = len(os.listdir(r'/data/linkang/RAD/frames_1fps/' + vid))
+        scores = (scores - np.min(scores)) / (np.max(scores) - np.min(scores))
+
+        labels[query] = {}
+        labels[query]['vid'] = vid
+        labels[query]['fps'] = fps
+        labels[query]['frame_num'] = fnum
+        labels[query]['scores'] = list(scores[:frame_cap_num])
+        print(vid, len(labels[query]['scores']), frame_cap_num,
+              len(labels[query]['scores']) <= frame_cap_num)
+
+    with open(r'/data/linkang/RAD/labels.json', 'w') as file:
+        json.dump(labels, file)
+    print("Done !")
+    return
+
+# load_annotations_rad("/data/linkang/RAD/query_frame_annotations.csv")
+frame_capture_rad()
